@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <cctype>
 
 namespace waiting_server {
 
@@ -305,6 +306,9 @@ struct Connection {
     // Pre-allocated timer for checking target server connection timeout
     asio::steady_timer connect_timer;
     
+    // Pre-allocated timer for action bar updates
+    asio::steady_timer actionbar_timer;
+    
     enum class State {
         Handshake,
         Status,
@@ -323,6 +327,10 @@ struct Connection {
     std::array<char, 32> player_name = {};
     std::array<std::byte, 16> player_uuid = {};
     
+    // Skin properties cached from Mojang API (stored as fixed-size arrays to avoid dynamic allocation)
+    std::array<char, 3072> skin_value = {};
+    std::array<char, 1536> skin_signature = {};
+    
     size_t config_packet_index = 0;
     size_t play_packet_index = 0;
     
@@ -334,7 +342,7 @@ struct Connection {
     bool on_ground = true;
     
     Connection(asio::io_context& io, size_t idx) 
-        : index(idx), socket(io), check_socket(io), keepalive_timer(io), connect_timer(io) {
+        : index(idx), socket(io), check_socket(io), keepalive_timer(io), connect_timer(io), actionbar_timer(io) {
         reset();
     }
     
@@ -346,6 +354,8 @@ struct Connection {
         remote_port = 0;
         player_name.fill('\0');
         player_uuid.fill(std::byte{0});
+        skin_value.fill('\0');
+        skin_signature.fill('\0');
         config_packet_index = 0;
         play_packet_index = 0;
         x = 0.0;
@@ -358,9 +368,96 @@ struct Connection {
         std::error_code ec;
         keepalive_timer.cancel(ec);
         connect_timer.cancel(ec);
+        actionbar_timer.cancel(ec);
         check_socket.close(ec);
     }
 };
+
+inline void fetch_player_skin(const char* username, std::array<char, 3072>& out_value, std::array<char, 1536>& out_signature) {
+    out_value.fill('\0');
+    out_signature.fill('\0');
+    
+    std::string command = "python3 -c '\n\
+import sys, urllib.request, json\n\
+try:\n\
+    name = sys.argv[1]\n\
+    req = urllib.request.Request(\n\
+        \"https://api.mojang.com/users/profiles/minecraft/\" + name,\n\
+        headers={\"User-Agent\": \"MinecraftSkinFetcher/1.0\"}\n\
+    )\n\
+    u = urllib.request.urlopen(req, timeout=3)\n\
+    data = json.loads(u.read().decode())\n\
+    uuid = data[\"id\"]\n\
+    req2 = urllib.request.Request(\n\
+        \"https://sessionserver.mojang.com/session/minecraft/profile/\" + uuid + \"?unsigned=false\",\n\
+        headers={\"User-Agent\": \"MinecraftSkinFetcher/1.0\"}\n\
+    )\n\
+    u2 = urllib.request.urlopen(req2, timeout=3)\n\
+    profile = json.loads(u2.read().decode())\n\
+    props = profile.get(\"properties\", [])\n\
+    for p in props:\n\
+        if p[\"name\"] == \"textures\":\n\
+            print(p[\"value\"])\n\
+            print(p.get(\"signature\", \"\"))\n\
+            sys.exit(0)\n\
+except Exception:\n\
+    sys.exit(1)\n\
+' ";
+    
+    std::string safe_user;
+    for (size_t i = 0; i < 16 && username[i] != '\0'; ++i) {
+        char c = username[i];
+        if (std::isalnum(c) || c == '_') {
+            safe_user += c;
+        }
+    }
+    command += safe_user;
+    
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return;
+    }
+    
+    char val_buf[4096] = {};
+    char sig_buf[4096] = {};
+    
+    if (std::fgets(val_buf, sizeof(val_buf), pipe) != nullptr) {
+        size_t len = std::strlen(val_buf);
+        while (len > 0 && (val_buf[len - 1] == '\n' || val_buf[len - 1] == '\r')) {
+            val_buf[len - 1] = '\0';
+            len--;
+        }
+        std::strncpy(out_value.data(), val_buf, out_value.size() - 1);
+        
+        if (std::fgets(sig_buf, sizeof(sig_buf), pipe) != nullptr) {
+            size_t len2 = std::strlen(sig_buf);
+            while (len2 > 0 && (sig_buf[len2 - 1] == '\n' || sig_buf[len2 - 1] == '\r')) {
+                sig_buf[len2 - 1] = '\0';
+                len2--;
+            }
+            std::strncpy(out_signature.data(), sig_buf, out_signature.size() - 1);
+        }
+    }
+    pclose(pipe);
+}
+
+inline bool write_connection_properties(PacketWriter& writer, Connection* conn) {
+    if (conn->skin_value[0] != '\0') {
+        if (!writer.write_varint(1)) return false;
+        if (!writer.write_string("textures")) return false;
+        if (!writer.write_string(std::string_view(conn->skin_value.data()))) return false;
+        if (conn->skin_signature[0] != '\0') {
+            if (!writer.write_bool(true)) return false;
+            if (!writer.write_string(std::string_view(conn->skin_signature.data()))) return false;
+        } else {
+            if (!writer.write_bool(false)) return false;
+        }
+    } else {
+        if (!writer.write_varint(0)) return false;
+    }
+    return true;
+}
+
 
 // --- Core Server Class ---
 class Server {
@@ -592,6 +689,14 @@ private:
                     conn->player_uuid = uuid;
                     std::strncpy(conn->player_name.data(), name.data(), std::min(name.size(), conn->player_name.size() - 1));
                     
+                    log_info("[%s] Fetching skin for player '%s'...", conn->remote_ip.data(), conn->player_name.data());
+                    fetch_player_skin(conn->player_name.data(), conn->skin_value, conn->skin_signature);
+                    if (conn->skin_value[0] != '\0') {
+                        log_info("[%s] Successfully retrieved skin from Mojang API.", conn->player_name.data());
+                    } else {
+                        log_info("[%s] No skin retrieved (offline username or network error).", conn->player_name.data());
+                    }
+                    
                     char uuid_str[37] = {};
                     auto to_hex = [](std::byte b, char* dest) {
                         static constexpr char hex_digits[] = "0123456789abcdef";
@@ -628,7 +733,7 @@ private:
                     if (!writer.write_varint(0x02)) return false; 
                     if (!writer.write_uuid(uuid)) return false;
                     if (!writer.write_string(name)) return false;
-                    if (!writer.write_varint(0)) return false; 
+                    if (!write_connection_properties(writer, conn)) return false; 
                     
                     auto resp = writer.finalize();
                     if (!resp) return false;
@@ -910,7 +1015,7 @@ private:
             writer.write_varint(1) &&
             writer.write_uuid(conn->player_uuid) &&
             writer.write_string(std::string_view(conn->player_name.data())) &&
-            writer.write_varint(0) && // properties
+            write_connection_properties(writer, conn) && // properties
             writer.write_bool(false) && // chat session
             writer.write_varint(0) && // gameMode
             writer.write_bool(true) && // listed
@@ -944,11 +1049,13 @@ private:
     void send_next_play_packet(Connection* conn) {
         if (!conn->is_active || conn->state != Connection::State::Play) return;
         if (conn->play_packet_index >= std::size(captured::play_packets)) {
+            send_entity_metadata(conn, conn);
             handle_player_spawned_in_play(conn);
             if (global_state_.online) {
                 log_info("[%s] Target server is ONLINE. Transferring player in Play mode.", conn->player_name.data());
                 send_play_transfer_packet(conn);
             } else {
+                start_play_actionbar_loop(conn);
                 start_play_keepalive_loop(conn);
             }
             return;
@@ -1052,16 +1159,72 @@ private:
         }
     }
     
+    void send_action_bar(Connection* conn, std::string_view text) {
+        std::array<std::byte, 512> actionbar_buf;
+        PacketWriter writer(actionbar_buf);
+        if (writer.write_varint(0x57) &&
+            writer.write_byte(std::byte{0x08}) &&
+            writer.write_ushort(static_cast<uint16_t>(text.size()))) {
+            
+            bool ok = true;
+            for (char c : text) {
+                if (!writer.write_byte(static_cast<std::byte>(c))) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                auto resp = writer.finalize();
+                if (resp) {
+                    write_response(conn, *resp, false);
+                }
+            }
+        }
+    }
+    
+    void start_play_actionbar_loop(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Play) return;
+        if (global_state_.online) return;
+        
+        if (global_state_.online) {
+            send_action_bar(conn, "§a● Main server is online");
+        } else {
+            send_action_bar(conn, "§c◌ Main server is starting");
+        }
+        
+        conn->actionbar_timer.expires_after(std::chrono::seconds(2));
+        conn->actionbar_timer.async_wait([this, conn](std::error_code ec) {
+            if (ec) return;
+            start_play_actionbar_loop(conn);
+        });
+    }
+    
+    void send_entity_metadata(Connection* recipient, Connection* target) {
+        std::array<std::byte, 64> meta_buf;
+        PacketWriter writer(meta_buf);
+        if (writer.write_varint(0x63) &&
+            writer.write_varint(300 + static_cast<int32_t>(target->index)) &&
+            writer.write_byte(std::byte{16}) &&
+            writer.write_varint(0) &&
+            writer.write_byte(std::byte{0x7F}) &&
+            writer.write_byte(std::byte{0xFF})) {
+            auto resp = writer.finalize();
+            if (resp) {
+                write_response(recipient, *resp, false);
+            }
+        }
+    }
+    
     void send_spawn_player_packets(Connection* recipient, Connection* target) {
         {
-            std::array<std::byte, 256> info_buf;
+            std::array<std::byte, 4096> info_buf;
             PacketWriter writer(info_buf);
             if (writer.write_varint(0x46) &&
                 writer.write_byte(std::byte{0x0D}) &&
                 writer.write_varint(1) &&
                 writer.write_uuid(target->player_uuid) &&
                 writer.write_string(std::string_view(target->player_name.data())) &&
-                writer.write_varint(0) &&
+                write_connection_properties(writer, target) &&
                 writer.write_varint(1) &&
                 writer.write_bool(true)) {
                 auto resp = writer.finalize();
@@ -1092,6 +1255,7 @@ private:
                 }
             }
         }
+        send_entity_metadata(recipient, target);
     }
     
     void handle_player_spawned_in_play(Connection* conn) {
