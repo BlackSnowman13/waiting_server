@@ -76,6 +76,46 @@ inline std::optional<std::array<std::byte, 16>> read_uuid(std::span<const std::b
     return uuid;
 }
 
+// Read a double (8 bytes, big-endian)
+inline std::optional<double> read_double(std::span<const std::byte>& data) {
+    if (data.size() < 8) {
+        return std::nullopt;
+    }
+    uint64_t uval = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        uval = (uval << 8) | static_cast<uint8_t>(data[i]);
+    }
+    double value;
+    std::memcpy(&value, &uval, 8);
+    data = data.subspan(8);
+    return value;
+}
+
+// Read a float (4 bytes, big-endian)
+inline std::optional<float> read_float(std::span<const std::byte>& data) {
+    if (data.size() < 4) {
+        return std::nullopt;
+    }
+    uint32_t uval = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        uval = (uval << 8) | static_cast<uint8_t>(data[i]);
+    }
+    float value;
+    std::memcpy(&value, &uval, 4);
+    data = data.subspan(4);
+    return value;
+}
+
+// Read a single byte
+inline std::optional<std::byte> read_byte(std::span<const std::byte>& data) {
+    if (data.empty()) {
+        return std::nullopt;
+    }
+    std::byte value = data[0];
+    data = data.subspan(1);
+    return value;
+}
+
 // Read a string (length-prefixed with a VarInt)
 inline std::optional<std::string_view> read_string(std::span<const std::byte>& data) {
     std::span<const std::byte> temp = data;
@@ -110,6 +150,18 @@ public:
 
     std::optional<std::array<std::byte, 16>> read_uuid() {
         return waiting_server::read_uuid(remaining_);
+    }
+
+    std::optional<double> read_double() {
+        return waiting_server::read_double(remaining_);
+    }
+
+    std::optional<float> read_float() {
+        return waiting_server::read_float(remaining_);
+    }
+
+    std::optional<std::byte> read_byte() {
+        return waiting_server::read_byte(remaining_);
     }
 
     std::optional<std::string_view> read_string() {

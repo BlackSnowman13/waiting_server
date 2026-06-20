@@ -81,6 +81,48 @@ public:
         return true;
     }
 
+    bool write_double(double value) {
+        if (buffer_.size() - offset_ < 8) return false;
+        uint64_t uval;
+        std::memcpy(&uval, &value, 8);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        // No swap
+#else
+        uval = __builtin_bswap64(uval);
+#endif
+        std::memcpy(&buffer_[offset_], &uval, 8);
+        offset_ += 8;
+        return true;
+    }
+
+    bool write_float(float value) {
+        if (buffer_.size() - offset_ < 4) return false;
+        uint32_t uval;
+        std::memcpy(&uval, &value, 4);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        // No swap
+#else
+        uval = __builtin_bswap32(uval);
+#endif
+        std::memcpy(&buffer_[offset_], &uval, 4);
+        offset_ += 4;
+        return true;
+    }
+
+    bool write_bool(bool value) {
+        if (buffer_.size() - offset_ < 1) return false;
+        buffer_[offset_] = static_cast<std::byte>(value ? 1 : 0);
+        offset_ += 1;
+        return true;
+    }
+
+    bool write_byte(std::byte value) {
+        if (buffer_.size() - offset_ < 1) return false;
+        buffer_[offset_] = value;
+        offset_ += 1;
+        return true;
+    }
+
     bool write_string(std::string_view str) {
         if (!write_varint(static_cast<int32_t>(str.size()))) return false;
         if (buffer_.size() - offset_ < str.size()) return false;

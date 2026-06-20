@@ -1,6 +1,7 @@
 #include <asio.hpp>
 #include "packet_reader.hpp"
 #include "packet_writer.hpp"
+#include "captured_packets.hpp"
 #include <array>
 #include <span>
 #include <optional>
@@ -309,6 +310,7 @@ struct Connection {
         Status,
         Login,
         Configuration,
+        Play,
         Closed
     } state = State::Handshake;
     
@@ -319,6 +321,17 @@ struct Connection {
     
     // Cache player credentials to use in logs
     std::array<char, 32> player_name = {};
+    std::array<std::byte, 16> player_uuid = {};
+    
+    size_t config_packet_index = 0;
+    size_t play_packet_index = 0;
+    
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    float yrot = 0.0f;
+    float xrot = 0.0f;
+    bool on_ground = true;
     
     Connection(asio::io_context& io, size_t idx) 
         : index(idx), socket(io), check_socket(io), keepalive_timer(io), connect_timer(io) {
@@ -332,6 +345,15 @@ struct Connection {
         remote_ip.fill('\0');
         remote_port = 0;
         player_name.fill('\0');
+        player_uuid.fill(std::byte{0});
+        config_packet_index = 0;
+        play_packet_index = 0;
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
+        yrot = 0.0f;
+        xrot = 0.0f;
+        on_ground = true;
         
         std::error_code ec;
         keepalive_timer.cancel(ec);
@@ -421,7 +443,7 @@ private:
                     return;
                 }
                 if (ec) {
-                    if (conn->state == Connection::State::Configuration) {
+                    if (conn->state == Connection::State::Configuration || conn->state == Connection::State::Play) {
                         log_info("[%s] Player disconnected.", conn->player_name.data());
                     }
                     close_connection(conn);
@@ -567,6 +589,7 @@ private:
                     std::string_view name = *name_opt;
                     std::array<std::byte, 16> uuid = *uuid_opt;
                     
+                    conn->player_uuid = uuid;
                     std::strncpy(conn->player_name.data(), name.data(), std::min(name.size(), conn->player_name.size() - 1));
                     
                     char uuid_str[37] = {};
@@ -615,7 +638,7 @@ private:
                 } else if (packet_id == 0x03) {
                     conn->state = Connection::State::Configuration;
                     
-                    check_target_server(conn);
+                    send_all_configuration_packets(conn);
                     return true;
                 } else {
                     return false;
@@ -626,8 +649,75 @@ private:
                     return true;
                 } else if (packet_id == 0x04) {
                     return true;
+                } else if (packet_id == 0x03) {
+                    conn->state = Connection::State::Play;
+                    conn->play_packet_index = 0;
+                    conn->x = -3.5;
+                    conn->y = 124.0;
+                    conn->z = 9.5;
+                    conn->yrot = 0.0f;
+                    conn->xrot = 0.0f;
+                    conn->on_ground = true;
+                    log_info("[%s] Entered Play mode.", conn->player_name.data());
+                    
+                    send_next_play_packet(conn);
+                    return true;
                 } else {
                     return true; 
+                }
+            }
+            case Connection::State::Play: {
+                if (packet_id == 0x1E) { // Pos
+                    auto x_opt = reader.read_double();
+                    auto y_opt = reader.read_double();
+                    auto z_opt = reader.read_double();
+                    auto flag_opt = reader.read_byte();
+                    if (x_opt && y_opt && z_opt && flag_opt) {
+                        conn->x = *x_opt;
+                        conn->y = *y_opt;
+                        conn->z = *z_opt;
+                        conn->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                        broadcast_player_movement(conn);
+                    }
+                    return true;
+                } else if (packet_id == 0x1F) { // PosRot
+                    auto x_opt = reader.read_double();
+                    auto y_opt = reader.read_double();
+                    auto z_opt = reader.read_double();
+                    auto yrot_opt = reader.read_float();
+                    auto xrot_opt = reader.read_float();
+                    auto flag_opt = reader.read_byte();
+                    if (x_opt && y_opt && z_opt && yrot_opt && xrot_opt && flag_opt) {
+                        conn->x = *x_opt;
+                        conn->y = *y_opt;
+                        conn->z = *z_opt;
+                        conn->yrot = *yrot_opt;
+                        conn->xrot = *xrot_opt;
+                        conn->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                        broadcast_player_movement(conn);
+                    }
+                    return true;
+                } else if (packet_id == 0x20) { // Rot
+                    auto yrot_opt = reader.read_float();
+                    auto xrot_opt = reader.read_float();
+                    auto flag_opt = reader.read_byte();
+                    if (yrot_opt && xrot_opt && flag_opt) {
+                        conn->yrot = *yrot_opt;
+                        conn->xrot = *xrot_opt;
+                        conn->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                        broadcast_player_movement(conn);
+                    }
+                    return true;
+                } else if (packet_id == 0x21) { // StatusOnly
+                    auto flag_opt = reader.read_byte();
+                    if (flag_opt) {
+                        conn->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                    }
+                    return true;
+                } else if (packet_id == 0x1C) { // KeepAlive acknowledgement
+                    return true;
+                } else {
+                    return true;
                 }
             }
             default:
@@ -771,6 +861,318 @@ private:
             write_response(conn, *resp, true); 
         }
     }
+
+    void send_all_configuration_packets(Connection* conn) {
+        conn->config_packet_index = 0;
+        send_next_config_packet(conn);
+    }
+    
+    void send_next_config_packet(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Configuration) return;
+        if (conn->config_packet_index >= std::size(captured::config_packets)) {
+            return;
+        }
+        auto packet = captured::config_packets[conn->config_packet_index];
+        conn->config_packet_index++;
+        
+        asio::async_write(
+            conn->socket,
+            asio::buffer(packet.data.data(), packet.data.size()),
+            [this, conn](std::error_code ec, size_t) {
+                if (ec) {
+                    close_connection(conn);
+                    return;
+                }
+                send_next_config_packet(conn);
+            }
+        );
+    }
+    
+    void send_custom_play_packet_012(Connection* conn) {
+        // Construct the player info update packet dynamically
+        // Header (Length VarInt + Packet ID 0x46)
+        // Action mask: 0xFF
+        // List size: 1
+        // UUID: 16 bytes
+        // Name: VarInt length + bytes
+        // Properties: 0
+        // Chat session: false
+        // GameMode: 0
+        // Listed: true
+        // Latency: 0
+        // DisplayName: false
+        // ListOrder: 0
+        // ShowHat: false
+        
+        PacketWriter writer(conn->tx_buffer);
+        if (writer.write_varint(0x46) &&
+            writer.write_byte(std::byte{0xFF}) &&
+            writer.write_varint(1) &&
+            writer.write_uuid(conn->player_uuid) &&
+            writer.write_string(std::string_view(conn->player_name.data())) &&
+            writer.write_varint(0) && // properties
+            writer.write_bool(false) && // chat session
+            writer.write_varint(0) && // gameMode
+            writer.write_bool(true) && // listed
+            writer.write_varint(0) && // latency
+            writer.write_bool(false) && // displayName
+            writer.write_varint(0) && // listOrder
+            writer.write_bool(false)) { // showHat
+            
+            auto resp = writer.finalize();
+            if (resp) {
+                conn->play_packet_index++;
+                asio::async_write(
+                    conn->socket,
+                    asio::buffer(resp->data(), resp->size()),
+                    [this, conn](std::error_code ec, size_t) {
+                        if (ec) {
+                            close_connection(conn);
+                            return;
+                        }
+                        send_next_play_packet(conn);
+                    }
+                );
+            } else {
+                close_connection(conn);
+            }
+        } else {
+            close_connection(conn);
+        }
+    }
+    
+    void send_next_play_packet(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Play) return;
+        if (conn->play_packet_index >= std::size(captured::play_packets)) {
+            handle_player_spawned_in_play(conn);
+            if (global_state_.online) {
+                log_info("[%s] Target server is ONLINE. Transferring player in Play mode.", conn->player_name.data());
+                send_play_transfer_packet(conn);
+            } else {
+                start_play_keepalive_loop(conn);
+            }
+            return;
+        }
+        
+        auto packet = captured::play_packets[conn->play_packet_index];
+        if (conn->play_packet_index == 0) {
+            int32_t entity_id = 300 + static_cast<int32_t>(conn->index);
+            std::memcpy(conn->tx_buffer.data(), packet.data.data(), packet.data.size());
+            conn->tx_buffer[2] = static_cast<std::byte>((entity_id >> 24) & 0xFF);
+            conn->tx_buffer[3] = static_cast<std::byte>((entity_id >> 16) & 0xFF);
+            conn->tx_buffer[4] = static_cast<std::byte>((entity_id >> 8) & 0xFF);
+            conn->tx_buffer[5] = static_cast<std::byte>(entity_id & 0xFF);
+            
+            conn->play_packet_index++;
+            asio::async_write(
+                conn->socket,
+                asio::buffer(conn->tx_buffer.data(), packet.data.size()),
+                [this, conn](std::error_code ec, size_t) {
+                    if (ec) {
+                        close_connection(conn);
+                        return;
+                    }
+                    send_next_play_packet(conn);
+                }
+            );
+        } else if (conn->play_packet_index == 5) {
+            int32_t entity_id = 300 + static_cast<int32_t>(conn->index);
+            std::memcpy(conn->tx_buffer.data(), packet.data.data(), packet.data.size());
+            conn->tx_buffer[2] = static_cast<std::byte>((entity_id >> 24) & 0xFF);
+            conn->tx_buffer[3] = static_cast<std::byte>((entity_id >> 16) & 0xFF);
+            conn->tx_buffer[4] = static_cast<std::byte>((entity_id >> 8) & 0xFF);
+            conn->tx_buffer[5] = static_cast<std::byte>(entity_id & 0xFF);
+            
+            conn->play_packet_index++;
+            asio::async_write(
+                conn->socket,
+                asio::buffer(conn->tx_buffer.data(), packet.data.size()),
+                [this, conn](std::error_code ec, size_t) {
+                    if (ec) {
+                        close_connection(conn);
+                        return;
+                    }
+                    send_next_play_packet(conn);
+                }
+            );
+        } else if (conn->play_packet_index == 12) {
+            send_custom_play_packet_012(conn);
+        } else {
+            conn->play_packet_index++;
+            asio::async_write(
+                conn->socket,
+                asio::buffer(packet.data.data(), packet.data.size()),
+                [this, conn](std::error_code ec, size_t) {
+                    if (ec) {
+                        close_connection(conn);
+                        return;
+                    }
+                    send_next_play_packet(conn);
+                }
+            );
+        }
+    }
+    
+    void start_play_keepalive_loop(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Play) return;
+        
+        conn->keepalive_timer.expires_after(std::chrono::seconds(10));
+        conn->keepalive_timer.async_wait([this, conn](std::error_code ec) {
+            if (ec) return;
+            
+            if (conn->is_active && conn->state == Connection::State::Play) {
+                if (global_state_.online) {
+                    log_info("[%s] Target server is ONLINE. Transferring player in Play mode.", conn->player_name.data());
+                    send_play_transfer_packet(conn);
+                    return;
+                }
+                
+                uint64_t keepalive_id = std::chrono::steady_clock::now().time_since_epoch().count();
+                PacketWriter writer(conn->tx_buffer);
+                if (writer.write_varint(0x2C) && writer.write_ulong(keepalive_id)) {
+                    auto resp = writer.finalize();
+                    if (resp) {
+                        write_response(conn, *resp, false);
+                    }
+                }
+                start_play_keepalive_loop(conn);
+            }
+        });
+    }
+    
+    void send_play_transfer_packet(Connection* conn) {
+        PacketWriter writer(conn->tx_buffer);
+        if (!writer.write_varint(0x81)) return; 
+        if (!writer.write_string(config_.target_host.data())) return;
+        if (!writer.write_varint(config_.target_port)) return; 
+        
+        auto resp = writer.finalize();
+        if (resp) {
+            write_response(conn, *resp, true); 
+        }
+    }
+    
+    void send_spawn_player_packets(Connection* recipient, Connection* target) {
+        {
+            std::array<std::byte, 256> info_buf;
+            PacketWriter writer(info_buf);
+            if (writer.write_varint(0x46) &&
+                writer.write_byte(std::byte{0x0D}) &&
+                writer.write_varint(1) &&
+                writer.write_uuid(target->player_uuid) &&
+                writer.write_string(std::string_view(target->player_name.data())) &&
+                writer.write_varint(0) &&
+                writer.write_varint(1) &&
+                writer.write_bool(true)) {
+                auto resp = writer.finalize();
+                if (resp) {
+                    write_response(recipient, *resp, false);
+                }
+            }
+        }
+        
+        {
+            std::array<std::byte, 256> spawn_buf;
+            PacketWriter writer(spawn_buf);
+            if (writer.write_varint(0x01) &&
+                writer.write_varint(300 + static_cast<int32_t>(target->index)) &&
+                writer.write_uuid(target->player_uuid) &&
+                writer.write_varint(155) &&
+                writer.write_double(target->x) &&
+                writer.write_double(target->y) &&
+                writer.write_double(target->z) &&
+                writer.write_byte(std::byte{0x00}) &&
+                writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(target->xrot * 256.0f / 360.0f))) &&
+                writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(target->yrot * 256.0f / 360.0f))) &&
+                writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(target->yrot * 256.0f / 360.0f))) &&
+                writer.write_varint(0)) {
+                auto resp = writer.finalize();
+                if (resp) {
+                    write_response(recipient, *resp, false);
+                }
+            }
+        }
+    }
+    
+    void handle_player_spawned_in_play(Connection* conn) {
+        for (auto& other_opt : connection_pool_) {
+            if (other_opt && other_opt->is_active && other_opt->state == Connection::State::Play && &(*other_opt) != conn) {
+                Connection* other = &(*other_opt);
+                send_spawn_player_packets(other, conn);
+                send_spawn_player_packets(conn, other);
+            }
+        }
+    }
+    
+    void broadcast_player_movement(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Play) return;
+        
+        std::array<std::byte, 256> tele_buf;
+        PacketWriter tele_writer(tele_buf);
+        if (tele_writer.write_varint(0x7D) &&
+            tele_writer.write_varint(300 + static_cast<int32_t>(conn->index)) &&
+            tele_writer.write_double(conn->x) &&
+            tele_writer.write_double(conn->y) &&
+            tele_writer.write_double(conn->z) &&
+            tele_writer.write_double(0.0) &&
+            tele_writer.write_double(0.0) &&
+            tele_writer.write_double(0.0) &&
+            tele_writer.write_float(conn->yrot) &&
+            tele_writer.write_float(conn->xrot) &&
+            tele_writer.write_byte(std::byte{0x00}) &&
+            tele_writer.write_byte(std::byte{0x00}) &&
+            tele_writer.write_byte(std::byte{0x00}) &&
+            tele_writer.write_byte(std::byte{0x00}) &&
+            tele_writer.write_bool(conn->on_ground)) {
+            auto tele_span = tele_writer.finalize();
+            
+            std::array<std::byte, 64> rot_buf;
+            PacketWriter rot_writer(rot_buf);
+            if (rot_writer.write_varint(0x53) &&
+                rot_writer.write_varint(300 + static_cast<int32_t>(conn->index)) &&
+                rot_writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(conn->yrot * 256.0f / 360.0f)))) {
+                auto rot_span = rot_writer.finalize();
+                
+                if (tele_span && rot_span) {
+                    for (auto& other_opt : connection_pool_) {
+                        if (other_opt && other_opt->is_active && other_opt->state == Connection::State::Play && &(*other_opt) != conn) {
+                            write_response(&(*other_opt), *tele_span, false);
+                            write_response(&(*other_opt), *rot_span, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    void broadcast_player_disconnect(Connection* conn) {
+        if (!conn->is_active || conn->state != Connection::State::Play) return;
+        
+        std::array<std::byte, 64> remove_ent_buf;
+        PacketWriter ent_writer(remove_ent_buf);
+        if (ent_writer.write_varint(0x4D) &&
+            ent_writer.write_varint(1) &&
+            ent_writer.write_varint(300 + static_cast<int32_t>(conn->index))) {
+            auto ent_resp = ent_writer.finalize();
+            
+            std::array<std::byte, 64> remove_info_buf;
+            PacketWriter info_writer(remove_info_buf);
+            if (info_writer.write_varint(0x45) &&
+                info_writer.write_varint(1) &&
+                info_writer.write_uuid(conn->player_uuid)) {
+                auto info_resp = info_writer.finalize();
+                
+                if (ent_resp && info_resp) {
+                    for (auto& other_opt : connection_pool_) {
+                        if (other_opt && other_opt->is_active && other_opt->state == Connection::State::Play && &(*other_opt) != conn) {
+                            write_response(&(*other_opt), *ent_resp, false);
+                            write_response(&(*other_opt), *info_resp, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     void write_response(Connection* conn, std::span<const std::byte> data, bool close_after) {
         if (!conn->is_active) return;
@@ -795,6 +1197,10 @@ private:
     
     void close_connection(Connection* conn) {
         if (!conn->is_active) return;
+        
+        if (conn->state == Connection::State::Play) {
+            broadcast_player_disconnect(conn);
+        }
         
         std::error_code ec;
         conn->socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
