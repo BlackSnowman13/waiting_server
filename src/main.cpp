@@ -1244,7 +1244,7 @@ private:
             if (writer.write_varint(0x01) &&
                 writer.write_varint(300 + static_cast<int32_t>(target->index)) &&
                 writer.write_uuid(target->player_uuid) &&
-                writer.write_varint(155) &&
+                writer.write_varint(156) &&
                 writer.write_double(target->x) &&
                 writer.write_double(target->y) &&
                 writer.write_double(target->z) &&
@@ -1357,7 +1357,15 @@ private:
                 }
                 
                 if (close_after) {
-                    close_connection(conn);
+                    std::error_code shutdown_ec;
+                    conn->socket.shutdown(asio::ip::tcp::socket::shutdown_send, shutdown_ec);
+                    
+                    conn->connect_timer.expires_after(std::chrono::seconds(2));
+                    conn->connect_timer.async_wait([this, conn](std::error_code ec) {
+                        if (!ec) {
+                            close_connection(conn);
+                        }
+                    });
                 }
             }
         );
