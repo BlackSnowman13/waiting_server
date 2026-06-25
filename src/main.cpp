@@ -249,7 +249,7 @@ inline void format_global_json(GlobalServerState& state) {
     }
     
     const char* status_name = state.online ? "● Online" : "◌ Offline";
-    int32_t status_proto = state.online ? 775 : 6767;
+    int32_t status_proto = state.online ? 776 : 6767;
     const char* online_text = state.online ? "● Main server is online" : "◌ Main server is offline";
     const char* online_color = state.online ? "green" : "red";
     
@@ -734,6 +734,10 @@ private:
                     if (!writer.write_uuid(uuid)) return false;
                     if (!writer.write_string(name)) return false;
                     if (!write_connection_properties(writer, conn)) return false; 
+                    
+                    // Write dummy session ID (16 bytes)
+                    std::array<std::byte, 16> dummy_session_id = {};
+                    if (!writer.write_uuid(dummy_session_id)) return false;
                     
                     auto resp = writer.finalize();
                     if (!resp) return false;
@@ -1412,7 +1416,7 @@ private:
         std::array<std::byte, 256> h_buf;
         PacketWriter h_writer(h_buf);
         h_writer.write_varint(0x00);
-        h_writer.write_varint(775);
+        h_writer.write_varint(776);
         h_writer.write_string(config_.target_host.data());
         h_writer.write_ushort(config_.target_port);
         h_writer.write_varint(1); // Status next state
