@@ -1059,6 +1059,26 @@ private:
                 log_info("[%s] Target server is ONLINE. Transferring player in Play mode.", conn->player_name.data());
                 send_play_transfer_packet(conn);
             } else {
+                bool already_has_players = false;
+                for (const auto& other_opt : connection_pool_) {
+                    if (other_opt && other_opt->is_active && other_opt->state == Connection::State::Play && &(*other_opt) != conn) {
+                        already_has_players = true;
+                        break;
+                    }
+                }
+                
+                if (!already_has_players) {
+                    log_info("[%s] Target server is OFFLINE. Triggering Wake-on-LAN for %s. Holding player in lobby.", 
+                             conn->player_name.data(), config_.target_mac.data());
+                    char cmd_buf[128] = {};
+                    std::snprintf(cmd_buf, sizeof(cmd_buf), "wakeonlan %s &", config_.target_mac.data());
+                    std::system(cmd_buf);
+                    trigger_immediate_poll();
+                } else {
+                    log_info("[%s] Target server is OFFLINE. Server was already triggered. Holding player in lobby.", 
+                             conn->player_name.data());
+                }
+                
                 start_play_actionbar_loop(conn);
                 start_play_keepalive_loop(conn);
             }
@@ -1384,13 +1404,26 @@ private:
         conn->reset();
     }
 
-    // --- Background Target Server Polling Engine ---
     void schedule_poll(int seconds) {
-        poll_timer_.expires_after(std::chrono::seconds(seconds));
+        bool players_in_lobby = false;
+        for (const auto& conn_opt : connection_pool_) {
+            if (conn_opt && conn_opt->is_active && conn_opt->state == Connection::State::Play) {
+                players_in_lobby = true;
+                break;
+            }
+        }
+        int interval = players_in_lobby ? 5 : seconds;
+        poll_timer_.expires_after(std::chrono::seconds(interval));
         poll_timer_.async_wait([this](std::error_code ec) {
             if (ec) return;
             start_poll_cycle();
         });
+    }
+
+    void trigger_immediate_poll() {
+        std::error_code ec;
+        poll_timer_.cancel(ec);
+        start_poll_cycle();
     }
 
     void start_poll_cycle() {
