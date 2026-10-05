@@ -1,8 +1,10 @@
 build
-.vscode
-packets.md
-test_client.py
+!.vscode/*
+*.uf2
+old/
+tools/*.json
+tools/__pycache__
+AGENTS.md
 config.txt
-references
-scratch
-chunk_light_protocol.md
+.cache/
+.vscode
