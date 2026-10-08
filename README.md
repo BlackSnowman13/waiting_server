@@ -1,3 +1,5 @@
+# TODO: UNSLOP THIS READMEFILEOMG
+
 # WaitingServer (Protocol 776 / Minecraft 26.2)
 
 An ultra-lightweight stub and gatekeeper Minecraft server supporting both **Raspberry Pi Pico W** (RP2040 / RP2350 microcontroller) and **Linux** (x86_64 / ARM / Raspberry Pi OS).

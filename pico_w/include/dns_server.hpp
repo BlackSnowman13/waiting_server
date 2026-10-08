@@ -15,6 +15,7 @@ public:
     ip4_addr_t redirect_ip = {};
 
     bool init(ip4_addr_t redir_ip) {
+        stop();
         redirect_ip = redir_ip;
 
         pcb = udp_new();
@@ -58,6 +59,38 @@ private:
 
         if (req_len < 12) return;
 
+        // Find QTYPE at end of QNAME
+        size_t qpos = 12;
+        while (qpos < req_len && req[qpos] != 0) {
+            if ((req[qpos] & 0xC0) == 0xC0) {
+                qpos += 2;
+                break;
+            }
+            qpos += 1 + req[qpos];
+        }
+        if (qpos < req_len && req[qpos] == 0) {
+            qpos += 1;
+        }
+
+        uint16_t qtype = 1; // Default to A
+        if (qpos + 2 <= req_len) {
+            qtype = (static_cast<uint16_t>(req[qpos]) << 8) | req[qpos + 1];
+        }
+
+        // Extract domain name for logging
+        char domain_name[96] = {};
+        size_t dpos = 12;
+        size_t out_pos = 0;
+        while (dpos < req_len && req[dpos] != 0 && out_pos + req[dpos] + 2 < sizeof(domain_name)) {
+            uint8_t label_len = req[dpos++];
+            for (uint8_t i = 0; i < label_len && dpos < req_len; ++i) {
+                domain_name[out_pos++] = static_cast<char>(req[dpos++]);
+            }
+            domain_name[out_pos++] = '.';
+        }
+        if (out_pos > 0) domain_name[out_pos - 1] = '\0';
+        std::printf("[DNS] Query '%s' (Type %u) -> 192.168.4.1\n", domain_name, qtype);
+
         // Construct DNS Answer
         uint8_t resp[300];
         std::memcpy(resp, req, req_len);
@@ -65,39 +98,44 @@ private:
         // Flags: Standard query response, No error, Authoritative
         resp[2] = 0x81;
         resp[3] = 0x80;
-        // Answer Count = 1
-        resp[6] = 0x00;
-        resp[7] = 0x01;
-        // Authority Count = 0
-        resp[8] = 0x00;
+        resp[8] = 0x00; // Authority Count = 0
         resp[9] = 0x00;
-        // Additional Count = 0
-        resp[10] = 0x00;
+        resp[10] = 0x00; // Additional Count = 0
         resp[11] = 0x00;
 
         size_t ans_offset = req_len;
-        if (ans_offset + 16 > sizeof(resp)) return;
 
-        // Compression pointer to question name at offset 12 (0x0C)
-        resp[ans_offset++] = 0xC0;
-        resp[ans_offset++] = 0x0C;
-        // Type: A (1)
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x01;
-        // Class: IN (1)
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x01;
-        // TTL: 60 seconds
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x3C;
-        // Data length: 4 bytes
-        resp[ans_offset++] = 0x00;
-        resp[ans_offset++] = 0x04;
-        // IPv4 Address
-        std::memcpy(&resp[ans_offset], &self->redirect_ip.addr, 4);
-        ans_offset += 4;
+        if (qtype == 1) { // Type A (IPv4)
+            resp[6] = 0x00; // Answer Count = 1
+            resp[7] = 0x01;
+
+            if (ans_offset + 16 > sizeof(resp)) return;
+
+            // Compression pointer to question name at offset 12 (0x0C)
+            resp[ans_offset++] = 0xC0;
+            resp[ans_offset++] = 0x0C;
+            // Type: A (1)
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x01;
+            // Class: IN (1)
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x01;
+            // TTL: 60 seconds
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x3C;
+            // Data length: 4 bytes
+            resp[ans_offset++] = 0x00;
+            resp[ans_offset++] = 0x04;
+            // IPv4 Address
+            std::memcpy(&resp[ans_offset], &self->redirect_ip.addr, 4);
+            ans_offset += 4;
+        } else {
+            // Non-A query (e.g. AAAA / IPv6, HTTPS): Respond NOERROR with 0 answers
+            resp[6] = 0x00;
+            resp[7] = 0x00;
+        }
 
         struct pbuf* p_out = pbuf_alloc(PBUF_TRANSPORT, static_cast<u16_t>(ans_offset), PBUF_RAM);
         if (!p_out) return;

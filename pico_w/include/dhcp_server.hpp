@@ -17,6 +17,7 @@ public:
     ip4_addr_t netmask   = {};
 
     bool init(ip4_addr_t s_ip, ip4_addr_t c_ip, ip4_addr_t mask) {
+        stop();
         server_ip = s_ip;
         client_ip = c_ip;
         netmask   = mask;
@@ -169,6 +170,19 @@ private:
         buf[offset++] = 4;
         std::memcpy(&buf[offset], &server_ip.addr, 4);
         offset += 4;
+
+        // Option 114: Captive Portal URL (RFC 8908 / RFC 8910)
+        static constexpr const char CAPTIVE_URL[] = "http://192.168.4.1/";
+        buf[offset++] = 114;
+        buf[offset++] = sizeof(CAPTIVE_URL) - 1;
+        std::memcpy(&buf[offset], CAPTIVE_URL, sizeof(CAPTIVE_URL) - 1);
+        offset += sizeof(CAPTIVE_URL) - 1;
+
+        // Option 160: Captive Portal URL (Legacy)
+        buf[offset++] = 160;
+        buf[offset++] = sizeof(CAPTIVE_URL) - 1;
+        std::memcpy(&buf[offset], CAPTIVE_URL, sizeof(CAPTIVE_URL) - 1);
+        offset += sizeof(CAPTIVE_URL) - 1;
 
         // Option 255: End
         buf[offset++] = 255;

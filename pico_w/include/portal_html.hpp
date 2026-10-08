@@ -1,0 +1,98 @@
+#pragma once
+
+// AUTO-GENERATED FILE - DO NOT EDIT MANUALLY.
+// Generated from pico_w/portal.html by tools/bake_portal.py.
+
+namespace waiting_server {
+
+inline constexpr const char PORTAL_HTML_TEMPLATE[] =
+R"raw_portal_html(<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WaitingServer Setup</title>
+  <style>
+    *{box-sizing:border-box}
+    body{background:#0f172a;color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;padding:20px 16px;display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
+    .card{background:#1e293b;border-radius:16px;padding:24px 20px;width:100%%;max-width:420px;box-shadow:0 10px 25px -5px rgba(0,0,0,.5);border:1px solid #334155}
+    .header{display:flex;align-items:center;margin-bottom:16px}
+    .header h2{margin:0;color:#38bdf8;font-size:20px;font-weight:700}
+    .section-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:700;margin:18px 0 6px;border-bottom:1px solid #334155;padding-bottom:4px}
+    label{display:block;margin:10px 0 4px;font-size:13px;color:#94a3b8;font-weight:600}
+    input,select{width:100%%;padding:10px 12px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:14px;outline:none}
+    input:focus,select:focus{border-color:#38bdf8}
+    .row{display:flex;gap:10px}
+    .row>div{flex:1}
+    button.submit-btn{width:100%%;margin-top:20px;padding:12px;border-radius:10px;border:none;background:#0284c7;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:background .15s}
+    button.submit-btn:hover{background:#0369a1}
+    .note{font-size:12px;color:#64748b;margin-top:12px;text-align:center;line-height:1.4}
+    .modal-backdrop{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;padding:16px;z-index:100}
+    .modal-box{background:#1e293b;border:1px solid #ef4444;border-radius:12px;padding:20px;max-width:380px;width:100%%;box-shadow:0 20px 25px -5px rgba(0,0,0,.6)}
+    .modal-title{color:#f87171;font-size:16px;font-weight:700;margin:0 0 10px}
+    .modal-msg{font-size:13px;color:#cbd5e1;line-height:1.4;margin-bottom:16px;word-break:break-word}
+    .modal-btn{width:100%%;padding:10px;border-radius:8px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-size:14px}
+    .modal-btn:hover{background:#dc2626}
+  </style>
+</head>
+<body>
+  %s
+  <div class="card">
+    <div class="header">
+      <h2>&#10052; WaitingServer Setup</h2>
+    </div>
+    <form action="/save" method="GET">
+      <div class="section-title">Wi-Fi Connection</div>
+      <label>Wi-Fi Network (SSID)</label>
+      <input type="text" name="ssid" value="%s" maxlength="32" placeholder="e.g. MyHomeWiFi" required>
+      <label>Wi-Fi Password</label>
+      <input type="password" name="pass" value="%s" maxlength="63" placeholder="Wi-Fi Password">
+      <div class="row">
+        <div>
+          <label>Auth Security</label>
+          <select name="auth">
+            %s
+          </select>
+        </div>
+        <div>
+          <label>Attempts</label>
+          <input type="number" name="attempts" value="%u" min="1" max="5" required>
+        </div>
+      </div>
+      <label>Device Hostname</label>
+      <input type="text" name="hostname" value="%s" maxlength="31" placeholder="WaitingServer" required>
+      <div class="section-title">Minecraft Server Gate</div>
+      <label>Server MOTD (Line 1)</label>
+      <input type="text" name="motd" value="%s" maxlength="47" placeholder="e.g. &#10052; WaitingServer &#10022; Pico W" required>
+      <input type="hidden" name="host" value="%s">
+      <div class="row">
+        <div style="flex:2;">
+          <label>Target Server MAC (WoL &amp; Dynamic IP)</label>
+          <input type="text" name="mac" value="%s" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" required>
+        </div>
+        <div style="flex:1;">
+          <label>Port</label>
+          <input type="number" name="port" value="%u" min="1" max="65535" required>
+        </div>
+      </div>
+      <button type="submit" class="submit-btn">Save &amp; Connect</button>
+    </form>
+    <div class="note">Pico W will save these settings to Flash and reboot immediately to connect.</div>
+  </div>
+  <script>
+    function dismissError(){
+      var m=document.getElementById('error-modal');
+      if(m)m.style.display='none';
+    }
+  </script>
+</body>
+</html>
+)raw_portal_html";
+
+inline constexpr const char PORTAL_ERROR_MODAL_TEMPLATE[] =
+"<div id='error-modal' class='modal-backdrop'><div class='modal-box'><h3 class='modal-title'>&#9888; Connection Failed</h3><div class='modal-msg'>%s</div><button class='modal-btn' onclick='dismissError()'>Dismiss</button></div></div>";
+
+inline constexpr const char PORTAL_SAVE_SUCCESS_RESPONSE[] =
+"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{background:#0f172a;color:#eee;font-family:sans-serif;text-align:center;padding:40px;}.card{background:#1e293b;border-radius:14px;padding:30px;max-width:400px;margin:auto;box-shadow:0 4px 16px rgba(0,0,0,0.5);border:1px solid #334155;}h2{color:#38bdf8;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class='card'><h2>&#10004; Settings Saved!</h2><p>WaitingServer is rebooting to connect to your Wi-Fi network.</p><p>The LED will transition to a steady 1 Hz blink once online.</p></div></body></html>";
+
+} // namespace waiting_server

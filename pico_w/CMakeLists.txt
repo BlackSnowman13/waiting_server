@@ -32,9 +32,15 @@ project(waiting_server C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
+# Generate portal_html.hpp from portal.html at build time
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_LIST_DIR}/include/portal_html.hpp
+    COMMAND python3 ${CMAKE_CURRENT_LIST_DIR}/../tools/bake_portal.py
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/portal.html ${CMAKE_CURRENT_LIST_DIR}/../tools/bake_portal.py
+    COMMENT "Baking portal.html into include/portal_html.hpp"
+)
 
-add_executable(waiting_server waiting_server.cpp )
+add_executable(waiting_server waiting_server.cpp ${CMAKE_CURRENT_LIST_DIR}/include/portal_html.hpp)
 
 pico_set_program_name(waiting_server "waiting_server")
 pico_set_program_version(waiting_server "0.1")

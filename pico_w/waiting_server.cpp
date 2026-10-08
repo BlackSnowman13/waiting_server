@@ -19,6 +19,7 @@
 #include "dhcp_server.hpp"
 #include "dns_server.hpp"
 #include "http_server.hpp"
+#include "bootsel.hpp"
 #include "packet_reader.hpp"
 #include "packet_writer.hpp"
 #include "server_status.hpp"
@@ -34,6 +35,7 @@ static waiting_server::TargetChecker g_target_checker;
 static waiting_server::DhcpServer    g_dhcp_server;
 static waiting_server::DnsServer     g_dns_server;
 static waiting_server::HttpServer    g_http_server;
+static waiting_server::FlashConfig   g_active_config;
 
 enum class RunMode {
     CaptivePortal, // Wi-Fi Setup Hotspot active
@@ -43,8 +45,9 @@ enum class RunMode {
 static RunMode g_run_mode = RunMode::CaptivePortal;
 
 enum class LedPattern {
-    CaptivePortal, // on 200ms, off 200ms, on 200ms, off 1000ms (1600ms cycle)
-    ServerRunning  // on 1000ms, off 1000ms (2000ms cycle)
+    CaptivePortal, // on 1000ms, off 1000ms (2000ms cycle)
+    ServerRunning, // on 200ms, off 200ms, on 200ms, off 1000ms (1600ms cycle)
+    ButtonHeld     // on 80ms, off 80ms (160ms cycle) - rapid strobe
 };
 
 // Non-blocking LED pattern generator
@@ -52,7 +55,10 @@ static void update_led(uint32_t now_ms, LedPattern pattern) {
     static bool current_state = false;
     bool new_state = false;
 
-    if (pattern == LedPattern::ServerRunning) {
+    if (pattern == LedPattern::ButtonHeld) {
+        uint32_t phase = now_ms % 160;
+        new_state = (phase < 80);
+    } else if (pattern == LedPattern::ServerRunning) {
         uint32_t phase = now_ms % 1600;
         if (phase < 200) {
             new_state = true;
@@ -369,11 +375,14 @@ static void send_play_action_bar(ClientConnection* client, std::string_view text
 // Sends the Play Transfer packet (0x81) to redirect player to primary server
 static void send_play_transfer(ClientConnection* client) {
     if (!client || !client->pcb || client->sending_play_queue) return;
+    const char* transfer_target = g_target_checker.target_ip_str[0] != '\0' ?
+        g_target_checker.target_ip_str : g_target_checker.target_host;
+
     std::printf("[TRANSFER] Primary server ONLINE! Transferring '%s' to %s:%d\n",
-                client->player_name, g_target_checker.target_host, g_target_checker.target_port);
+                client->player_name, transfer_target, g_target_checker.target_port);
     waiting_server::PacketWriter writer(client->tx_buffer);
     if (writer.write_varint(0x81) &&
-        writer.write_string(g_target_checker.target_host) &&
+        writer.write_string(transfer_target) &&
         writer.write_varint(g_target_checker.target_port)) {
         auto resp = writer.finalize();
         if (resp) {
@@ -416,14 +425,54 @@ static bool handle_client_packet(ClientConnection* client, int32_t packet_id, st
                 std::printf("[STATUS] Sending Status Response with Favicon (%s)...\n",
                             g_target_checker.is_online ? "Online" : "Sleeping");
 
-                if (g_target_checker.is_online) {
-                    client->tx_stream_ptr = waiting_server::STATUS_PACKET_ONLINE;
-                    client->tx_stream_remaining = waiting_server::STATUS_PACKET_ONLINE_SIZE;
-                } else {
-                    client->tx_stream_ptr = waiting_server::STATUS_PACKET_OFFLINE;
-                    client->tx_stream_remaining = waiting_server::STATUS_PACKET_OFFLINE_SIZE;
+                const uint8_t* prefix_ptr = g_target_checker.is_online ?
+                    waiting_server::STATUS_PREFIX_ONLINE : waiting_server::STATUS_PREFIX_OFFLINE;
+                size_t prefix_len = g_target_checker.is_online ?
+                    waiting_server::STATUS_PREFIX_ONLINE_SIZE : waiting_server::STATUS_PREFIX_OFFLINE_SIZE;
+                const uint8_t* suffix_ptr = g_target_checker.is_online ?
+                    waiting_server::STATUS_SUFFIX_ONLINE : waiting_server::STATUS_SUFFIX_OFFLINE;
+                size_t suffix_len = g_target_checker.is_online ?
+                    waiting_server::STATUS_SUFFIX_ONLINE_SIZE : waiting_server::STATUS_SUFFIX_OFFLINE_SIZE;
+
+                const char* motd_src = g_active_config.motd[0] != '\0' ?
+                    g_active_config.motd : "❄ WaitingServer ✦ Pico W";
+                char motd_escaped[96];
+                size_t motd_len = 0;
+                for (size_t i = 0; motd_src[i] != '\0' && motd_len < sizeof(motd_escaped) - 2; ++i) {
+                    char c = motd_src[i];
+                    if (c == '"' || c == '\\') {
+                        motd_escaped[motd_len++] = '\\';
+                    }
+                    motd_escaped[motd_len++] = c;
+                }
+                motd_escaped[motd_len] = '\0';
+
+                size_t json_len = prefix_len + motd_len + suffix_len;
+                size_t json_varint_len = waiting_server::varint_size(static_cast<int32_t>(json_len));
+                size_t payload_len = 1 /* packet_id 0x00 */ + json_varint_len + json_len;
+
+                size_t offset = 0;
+                // 1. Packet length VarInt
+                offset += waiting_server::write_varint(std::span<std::byte>(client->tx_buffer).subspan(offset), static_cast<int32_t>(payload_len));
+                // 2. Packet ID (0x00)
+                offset += waiting_server::write_varint(std::span<std::byte>(client->tx_buffer).subspan(offset), 0x00);
+                // 3. JSON String Length VarInt
+                offset += waiting_server::write_varint(std::span<std::byte>(client->tx_buffer).subspan(offset), static_cast<int32_t>(json_len));
+                // 4. JSON Prefix
+                std::memcpy(client->tx_buffer.data() + offset, prefix_ptr, prefix_len);
+                offset += prefix_len;
+                // 5. Dynamic MOTD Line 1
+                std::memcpy(client->tx_buffer.data() + offset, motd_escaped, motd_len);
+                offset += motd_len;
+
+                err_t err = tcp_write(client->pcb, client->tx_buffer.data(), static_cast<u16_t>(offset), TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+                if (err != ERR_OK) {
+                    std::printf("[ERROR] tcp_write status header failed: %d\n", err);
+                    return false;
                 }
 
+                client->tx_stream_ptr = suffix_ptr;
+                client->tx_stream_remaining = suffix_len;
                 client->tx_is_rom = true;
                 client->close_after_sent = false;
                 pump_tx(client);
@@ -730,8 +779,28 @@ static err_t on_tcp_accept(void* arg, struct tcp_pcb* newpcb, err_t err) {
     return ERR_OK;
 }
 
+static struct tcp_pcb* g_server_pcb = nullptr;
+
+// Stop listening for Minecraft connections and cleanly disconnect any active clients
+static void stop_server() {
+    for (size_t i = 0; i < waiting_server::MAX_CLIENTS; ++i) {
+        if (g_clients[i].is_active) {
+            close_client(&g_clients[i]);
+        }
+    }
+    if (g_server_pcb) {
+        tcp_close(g_server_pcb);
+        g_server_pcb = nullptr;
+        std::printf("[INFO] Minecraft WaitingServer stopped.\n");
+    }
+}
+
 // Start listening for Minecraft connections
 static bool start_server(uint16_t port) {
+    if (g_server_pcb) {
+        stop_server();
+    }
+
     struct tcp_pcb* pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!pcb) {
         std::printf("[ERROR] Failed to allocate tcp_pcb\n");
@@ -744,20 +813,64 @@ static bool start_server(uint16_t port) {
         return false;
     }
 
-    struct tcp_pcb* listen_pcb = tcp_listen_with_backlog(pcb, 4);
-    if (!listen_pcb) {
+    g_server_pcb = tcp_listen_with_backlog(pcb, 4);
+    if (!g_server_pcb) {
         std::printf("[ERROR] Failed to listen on tcp_pcb\n");
         return false;
     }
 
-    tcp_accept(listen_pcb, on_tcp_accept);
+    tcp_accept(g_server_pcb, on_tcp_accept);
     std::printf("[INFO] Minecraft WaitingServer listening on port %u\n", port);
     return true;
 }
 
+// Transition into Captive Portal mode
+static void start_captive_portal(const char* reason = nullptr) {
+    g_run_mode = RunMode::CaptivePortal;
+
+    // 1. Stop Minecraft server and any connected clients
+    stop_server();
+
+    // 2. Disconnect Wi-Fi Station
+    cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+    cyw43_arch_disable_sta_mode();
+
+    // 3. Start Access Point mode
+    std::printf("\n==========================================\n");
+    std::printf(">>> STARTING CAPTIVE PORTAL <<<\n");
+    std::printf("Hotspot SSID : WaitingServer-Setup\n");
+    std::printf("Setup URL    : http://192.168.4.1\n");
+    if (reason && reason[0] != '\0') {
+        std::printf("Trigger/Info : %s\n", reason);
+    }
+    std::printf("==========================================\n\n");
+
+    cyw43_arch_enable_ap_mode("WaitingServer-Setup", nullptr, CYW43_AUTH_OPEN);
+
+    ip4_addr_t ap_ip, ap_client, ap_mask;
+    IP4_ADDR(&ap_ip, 192, 168, 4, 1);
+    IP4_ADDR(&ap_client, 192, 168, 4, 2);
+    IP4_ADDR(&ap_mask, 255, 255, 255, 0);
+
+    g_dhcp_server.init(ap_ip, ap_client, ap_mask);
+    g_dns_server.init(ap_ip);
+    g_http_server.init(g_active_config, (reason && reason[0] != '\0') ? reason : nullptr);
+}
+
 int main() {
     stdio_init_all();
-    sleep_ms(2000);
+
+    // Check if BOOTSEL button is held at boot (during 2-second boot window)
+    bool force_portal = false;
+    uint32_t boot_check_start = to_ms_since_boot(get_absolute_time());
+    while (to_ms_since_boot(get_absolute_time()) - boot_check_start < 2000) {
+        if (waiting_server::is_bootsel_pressed()) {
+            force_portal = true;
+            std::printf("[BOOT] BOOTSEL held at startup! Forcing Captive Portal mode.\n");
+            break;
+        }
+        sleep_ms(50);
+    }
 
     std::printf("----- Pico Minecraft 26.2 Waiting Server -----\n\n");
 
@@ -774,91 +887,90 @@ int main() {
     std::printf("[INFO] Pico W Wi-Fi MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
                 pico_mac[0], pico_mac[1], pico_mac[2], pico_mac[3], pico_mac[4], pico_mac[5]);
 
-    // 2. Load Configuration from Flash (or fall back to compile-time defaults)
-    waiting_server::FlashConfig active_cfg = {};
-    if (waiting_server::load_flash_config(active_cfg)) {
+    // 2. Load Configuration from Flash
+    bool config_loaded = waiting_server::load_flash_config(g_active_config);
+    if (config_loaded) {
         std::printf("[CONFIG] Loaded persistent configuration from Flash:\n");
-        std::printf("         SSID   : '%s'\n", active_cfg.wifi_ssid);
-        std::printf("         Target : '%s:%d' (%s)\n",
-                    active_cfg.target_host, active_cfg.target_port, active_cfg.target_mac);
+        std::printf("         SSID     : '%s'\n", g_active_config.wifi_ssid);
+        std::printf("         Hostname : '%s'\n", g_active_config.hostname);
+        std::printf("         Auth     : 0x%08lX\n", static_cast<unsigned long>(g_active_config.wifi_auth));
+        std::printf("         Attempts : %u\n", g_active_config.connect_attempts);
+        std::printf("         MOTD     : '%s'\n", g_active_config.motd);
+        std::printf("         Target   : '%s:%d' (%s)\n",
+                    g_active_config.target_host, g_active_config.target_port, g_active_config.target_mac);
     } else {
-        // TODO: Insted of falling back to config.hpp, switch to captive portal to enter configs
-        std::printf("[CONFIG] No saved Flash configuration found. Using compile-time defaults.\n");
-        std::strncpy(active_cfg.wifi_ssid, waiting_server::WIFI_SSID, sizeof(active_cfg.wifi_ssid) - 1);
-        std::strncpy(active_cfg.wifi_password, waiting_server::WIFI_PASSWORD, sizeof(active_cfg.wifi_password) - 1);
-        std::strncpy(active_cfg.target_host, waiting_server::TARGET_HOST, sizeof(active_cfg.target_host) - 1);
-        active_cfg.target_port = waiting_server::TARGET_PORT;
-        std::strncpy(active_cfg.target_mac, waiting_server::TARGET_MAC, sizeof(active_cfg.target_mac) - 1);
+        std::printf("[CONFIG] No saved Flash configuration found. Initializing setup defaults.\n");
+        waiting_server::init_default_config(g_active_config);
     }
 
     // 3. Attempt connection to Wi-Fi Station with retry loop
     bool wifi_connected = false;
-    if (active_cfg.wifi_ssid[0] != '\0') {
+    char fail_reason[160] = {};
+
+    if (force_portal) {
+        std::snprintf(fail_reason, sizeof(fail_reason), "Manually triggered via BOOTSEL button at boot.");
+    } else if (g_active_config.wifi_ssid[0] != '\0') {
         cyw43_arch_enable_sta_mode();
         if (netif_default != nullptr) {
-            // TODO: Hostname should be configuarable via captive portal
-            netif_set_hostname(netif_default, "WaitingServer");
+            const char* host = g_active_config.hostname[0] != '\0' ? g_active_config.hostname : "WaitingServer";
+            netif_set_hostname(netif_default, host);
         }
 
-        std::printf("[INFO] Connecting to Wi-Fi '%s'...\n", active_cfg.wifi_ssid);
+        int max_attempts = g_active_config.connect_attempts;
+        if (max_attempts < 1) max_attempts = 1;
+        if (max_attempts > 5) max_attempts = 5;
 
-        // TODO: Configure attempts and auth methords via captive portal (one mthord only)
-        for (int attempt = 1; attempt <= 3 && !wifi_connected; ++attempt) {
-            std::printf("[INFO] Wi-Fi connection attempt %d/3...\n", attempt);
+        uint32_t auth_mode = g_active_config.wifi_auth;
+        if (auth_mode == 0 && g_active_config.wifi_password[0] != '\0') {
+            auth_mode = CYW43_AUTH_WPA2_MIXED_PSK;
+        }
 
-            // Attempt 1st mode: WPA2 Mixed
-            int status = cyw43_arch_wifi_connect_timeout_ms(
-                active_cfg.wifi_ssid,
-                active_cfg.wifi_password,
-                CYW43_AUTH_WPA2_MIXED_PSK,
-                10000
+        std::printf("[INFO] Connecting to Wi-Fi '%s' (Auth: 0x%08lX, Max Attempts: %d)...\n",
+                    g_active_config.wifi_ssid, static_cast<unsigned long>(auth_mode), max_attempts);
+
+        int last_status = 0;
+        for (int attempt = 1; attempt <= max_attempts && !wifi_connected; ++attempt) {
+            std::printf("[INFO] Wi-Fi connection attempt %d/%d...\n", attempt, max_attempts);
+
+            last_status = cyw43_arch_wifi_connect_timeout_ms(
+                g_active_config.wifi_ssid,
+                g_active_config.wifi_password,
+                auth_mode,
+                15000
             );
 
-            if (status == 0) {
+            if (last_status == 0) {
                 wifi_connected = true;
                 break;
             }
 
-            std::printf("[WARN] Attempt %d: WPA2 Mixed failed (code: %d). Retrying with WPA TKIP...\n", attempt, status);
+            std::printf("[WARN] Attempt %d/%d failed (code: %d).\n", attempt, max_attempts, last_status);
 
-            // Attempt 2nd mode: WPA TKIP
-            status = cyw43_arch_wifi_connect_timeout_ms(
-                active_cfg.wifi_ssid,
-                active_cfg.wifi_password,
-                CYW43_AUTH_WPA_TKIP_PSK,
-                10000
-            );
-
-            if (status == 0) {
-                wifi_connected = true;
-                break;
-            }
-
-            std::printf("[WARN] Attempt %d: WPA TKIP failed (code: %d). Retrying with WPA2 AES...\n", attempt, status);
-
-            // Attempt 3rd mode: WPA2 AES
-            status = cyw43_arch_wifi_connect_timeout_ms(
-                active_cfg.wifi_ssid,
-                active_cfg.wifi_password,
-                CYW43_AUTH_WPA2_AES_PSK,
-                10000
-            );
-
-            if (status == 0) {
-                wifi_connected = true;
-                break;
-            }
-
-            std::printf("[WARN] Attempt %d: WPA2 AES failed (code: %d).\n", attempt, status);
-
-            if (attempt < 3) {
+            if (attempt < max_attempts) {
                 cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
                 sleep_ms(1500);
             }
         }
-    }
 
-    //TODO: [New idea] Make it so that when user enters captive portal after a failed initializzation (eg: wrong password or auth methord), show a section where user can see the errors that occured on the previous initialization.
+        if (!wifi_connected) {
+            const char* err_desc = "Unknown error";
+            if (last_status == PICO_ERROR_TIMEOUT) {
+                err_desc = "Timed out (Network out of range or not found)";
+            } else if (last_status == PICO_ERROR_BADAUTH) {
+                err_desc = "Authentication failed (Wrong password or auth type)";
+            } else if (last_status == PICO_ERROR_CONNECT_FAILED) {
+                err_desc = "Connection failed (Association rejected)";
+            } else if (last_status == PICO_ERROR_GENERIC) {
+                err_desc = "Generic network failure";
+            }
+
+            std::snprintf(fail_reason, sizeof(fail_reason),
+                          "Failed to connect to '%s' after %d attempt%s (Code %d: %s).",
+                          g_active_config.wifi_ssid, max_attempts, (max_attempts > 1 ? "s" : ""),
+                          last_status, err_desc);
+            std::printf("[ERROR] %s\n", fail_reason);
+        }
+    }
 
     // 4. Branch based on Wi-Fi connection result
     if (wifi_connected) {
@@ -871,7 +983,7 @@ int main() {
 
             std::printf("\n==========================================\n");
             std::printf(">>> Wi-Fi Connected! <<<\n");
-            std::printf("Device Name: WaitingServer\n");
+            std::printf("Device Name: %s\n", g_active_config.hostname[0] != '\0' ? g_active_config.hostname : "WaitingServer");
             std::printf("IP Address : %s\n", ip4addr_ntoa(ip));
             std::printf("Netmask    : %s\n", ip4addr_ntoa(net));
             std::printf("Gateway    : %s\n", ip4addr_ntoa(gw));
@@ -879,7 +991,7 @@ int main() {
         }
 
         // Initialize target checker with active config
-        g_target_checker.init(active_cfg.target_host, active_cfg.target_port, active_cfg.target_mac);
+        g_target_checker.init(g_active_config.target_host, g_active_config.target_port, g_active_config.target_mac);
 
         // Start Minecraft TCP server on port 25565
         if (!start_server(waiting_server::SERVER_PORT)) {
@@ -887,44 +999,52 @@ int main() {
             return -1;
         }
     } else {
-        // Start Captive Portal Hotspot
-        g_run_mode = RunMode::CaptivePortal;
-        cyw43_arch_disable_sta_mode();
-
-        std::printf("\n==========================================\n");
-        std::printf(">>> STARTING CAPTIVE PORTAL <<<\n");
-        std::printf("Hotspot SSID : WaitingServer-Setup\n");
-        std::printf("Setup URL    : http://192.168.4.1\n");
-        std::printf("==========================================\n\n");
-
-        cyw43_arch_enable_ap_mode("WaitingServer-Setup", nullptr, CYW43_AUTH_OPEN);
-
-        ip4_addr_t ap_ip, ap_client, ap_mask;
-        IP4_ADDR(&ap_ip, 192, 168, 4, 1);
-        IP4_ADDR(&ap_client, 192, 168, 4, 2);
-        IP4_ADDR(&ap_mask, 255, 255, 255, 0);
-
-        g_dhcp_server.init(ap_ip, ap_client, ap_mask);
-        g_dns_server.init(ap_ip);
-        g_http_server.init(active_cfg);
+        start_captive_portal(fail_reason[0] != '\0' ? fail_reason : nullptr);
     }
 
     // 5. Main event loop (polling mode)
     uint32_t last_log_time = to_ms_since_boot(get_absolute_time());
     uint32_t uptime_seconds = 0;
+    uint32_t bootsel_press_start_ms = 0;
 
     while (true) {
         cyw43_arch_poll();
 
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
-        if (g_run_mode == RunMode::CaptivePortal) {
+        // Check onboard BOOTSEL button
+        if (waiting_server::is_bootsel_pressed()) {
+            if (bootsel_press_start_ms == 0) {
+                bootsel_press_start_ms = now;
+            } else {
+                uint32_t held_ms = now - bootsel_press_start_ms;
+                if (held_ms >= 3000) {
+                    if (g_run_mode == RunMode::ServerRunning) {
+                        std::printf("[BUTTON] BOOTSEL held for 3 seconds! Switching to Captive Portal...\n");
+                        start_captive_portal("Manually triggered via BOOTSEL button (3s hold)");
+                    } else if (g_run_mode == RunMode::CaptivePortal) {
+                        std::printf("[BUTTON] BOOTSEL held for 3 seconds in Captive Portal! Rebooting...\n");
+                        watchdog_reboot(0, 0, 0);
+                    }
+                    bootsel_press_start_ms = 0;
+                }
+            }
+        } else {
+            bootsel_press_start_ms = 0;
+        }
+
+        // LED feedback: rapid strobe while button is held, else mode-specific pattern
+        if (bootsel_press_start_ms != 0 && (now - bootsel_press_start_ms) >= 300) {
+            update_led(now, LedPattern::ButtonHeld);
+        } else if (g_run_mode == RunMode::CaptivePortal) {
             update_led(now, LedPattern::CaptivePortal);
-
-            g_http_server.poll(now);
-
         } else {
             update_led(now, LedPattern::ServerRunning);
+        }
+
+        if (g_run_mode == RunMode::CaptivePortal) {
+            g_http_server.poll(now);
+        } else {
 
             // Check if any clients are currently connected and waiting
             bool has_waiting_clients = false;

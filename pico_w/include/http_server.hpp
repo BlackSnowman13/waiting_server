@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "lwip/tcp.h"
 #include "flash_config.hpp"
+#include "portal_html.hpp"
 #include "hardware/watchdog.h"
 #include "pico/time.h"
 
@@ -18,9 +19,16 @@ public:
     uint32_t reboot_time_ms = 0;
 
     FlashConfig current_cfg = {};
+    char failure_reason[160] = {};
 
-    bool init(const FlashConfig& initial_cfg) {
+    bool init(const FlashConfig& initial_cfg, const char* fail_reason = nullptr) {
+        stop();
         current_cfg = initial_cfg;
+        failure_reason[0] = '\0';
+        if (fail_reason && fail_reason[0] != '\0') {
+            std::strncpy(failure_reason, fail_reason, sizeof(failure_reason) - 1);
+            failure_reason[sizeof(failure_reason) - 1] = '\0';
+        }
 
         pcb = tcp_new();
         if (!pcb) {
@@ -95,11 +103,52 @@ private:
         tcp_recved(tpcb, p->tot_len);
         pbuf_free(p);
 
-        // Check if request is saving parameters (POST or GET /save)
-        if (std::strstr(req_buf, "POST /save") != nullptr || std::strstr(req_buf, "GET /save?") != nullptr) {
+        char first_line[64] = {};
+        for (size_t i = 0; i < sizeof(first_line) - 1 && req_buf[i] != '\0' && req_buf[i] != '\r' && req_buf[i] != '\n'; ++i) {
+            first_line[i] = req_buf[i];
+        }
+        std::printf("[HTTP] %s -> '%s'\n", ip4addr_ntoa(&tpcb->remote_ip), first_line);
+
+        // 1. Check if saving configuration parameters
+        if (std::strstr(req_buf, "POST /save") != nullptr || std::strstr(req_buf, "GET /save") != nullptr) {
             self->handle_save(tpcb, req_buf);
-        } else {
+            return ERR_OK;
+        }
+
+        // 2. Ignore browser favicon requests
+        if (std::strstr(req_buf, "GET /favicon.ico") != nullptr) {
+            static constexpr const char FAVICON_RESP[] =
+                "HTTP/1.1 204 No Content\r\n"
+                "Connection: close\r\n\r\n";
+            tcp_write(tpcb, FAVICON_RESP, sizeof(FAVICON_RESP) - 1, TCP_WRITE_FLAG_COPY);
+            tcp_output(tpcb);
+            tcp_close(tpcb);
+            return ERR_OK;
+        }
+
+        // 3. Check if root setup form is requested
+        bool is_root = (std::strncmp(req_buf, "GET / ", 6) == 0 ||
+                        std::strncmp(req_buf, "GET /?", 6) == 0 ||
+                        std::strncmp(req_buf, "GET /index.html", 15) == 0);
+
+        // Check if Host header matches local server IP
+        const char* host_hdr = std::strstr(req_buf, "Host:");
+        bool is_ip_host = true;
+        if (host_hdr) {
+            host_hdr += 5;
+            while (*host_hdr == ' ') host_hdr++;
+            if (std::strncmp(host_hdr, "192.168.4.1", 11) != 0) {
+                is_ip_host = false;
+            }
+        }
+
+        if (is_root && is_ip_host) {
             self->handle_get_form(tpcb);
+        } else {
+            // Redirect captive portal detection probes (Android /generate_204,
+            // iOS /hotspot-detect.html, Windows /connecttest.txt, or foreign hosts)
+            // to http://192.168.4.1/
+            self->handle_redirect(tpcb);
         }
 
         return ERR_OK;
@@ -158,30 +207,38 @@ private:
         val = find_param(req_buf, "mac");
         if (val) url_decode(new_cfg.target_mac, val, sizeof(new_cfg.target_mac));
 
+        val = find_param(req_buf, "hostname");
+        if (val) url_decode(new_cfg.hostname, val, sizeof(new_cfg.hostname));
+
+        val = find_param(req_buf, "motd");
+        if (val) url_decode(new_cfg.motd, val, sizeof(new_cfg.motd));
+
+        val = find_param(req_buf, "auth");
+        if (val) {
+            char auth_str[16] = {};
+            url_decode(auth_str, val, sizeof(auth_str));
+            new_cfg.wifi_auth = static_cast<uint32_t>(std::strtoul(auth_str, nullptr, 10));
+        }
+
+        val = find_param(req_buf, "attempts");
+        if (val) {
+            char att_str[10] = {};
+            url_decode(att_str, val, sizeof(att_str));
+            int att = std::atoi(att_str);
+            if (att >= 1 && att <= 5) new_cfg.connect_attempts = static_cast<uint8_t>(att);
+        }
+
         if (new_cfg.wifi_ssid[0] != '\0') {
             save_flash_config(new_cfg);
             current_cfg = new_cfg;
-            std::printf("[CONFIG] Web setup updated config: SSID='%s', Host='%s:%d', MAC='%s'\n",
-                        new_cfg.wifi_ssid, new_cfg.target_host, new_cfg.target_port, new_cfg.target_mac);
+            std::printf("[CONFIG] Web setup updated config: SSID='%s', Host='%s:%d', MAC='%s', Hostname='%s', MOTD='%s'\n",
+                        new_cfg.wifi_ssid, new_cfg.target_host, new_cfg.target_port,
+                        new_cfg.target_mac, new_cfg.hostname, new_cfg.motd);
         } else {
             std::printf("[CONFIG] Web setup rejected empty SSID!\n");
         }
 
-        static constexpr const char SAVE_RESP[] =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/html\r\n"
-            "Connection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<style>body{background:#121212;color:#eee;font-family:sans-serif;text-align:center;padding:40px;}"
-            ".card{background:#1e1e1e;border-radius:12px;padding:30px;max-width:400px;margin:auto;box-shadow:0 4px 16px rgba(0,0,0,0.5);}"
-            "h2{color:#4fc3f7;}p{color:#aaa;line-height:1.5;}</style></head><body>"
-            "<div class='card'>"
-            "<h2>&#10004; Settings Saved!</h2>"
-            "<p>WaitingServer is restarting now and connecting to your Wi-Fi network.</p>"
-            "<p>The LED will transition to a steady 1 Hz blink once connected.</p>"
-            "</div></body></html>";
-
-        tcp_write(tpcb, SAVE_RESP, sizeof(SAVE_RESP) - 1, TCP_WRITE_FLAG_COPY);
+        tcp_write(tpcb, PORTAL_SAVE_SUCCESS_RESPONSE, sizeof(PORTAL_SAVE_SUCCESS_RESPONSE) - 1, TCP_WRITE_FLAG_COPY);
         tcp_output(tpcb);
         tcp_close(tpcb);
 
@@ -189,51 +246,79 @@ private:
         reboot_time_ms = to_ms_since_boot(get_absolute_time()) + 1500;
     }
 
+    void handle_redirect(struct tcp_pcb* tpcb) {
+        std::printf("[HTTP] Redirecting %s (302 Found -> http://192.168.4.1/)\n",
+                    ip4addr_ntoa(&tpcb->remote_ip));
+        static constexpr const char REDIRECT_RESP[] =
+            "HTTP/1.1 302 Found\r\n"
+            "Location: http://192.168.4.1/\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n";
+        tcp_write(tpcb, REDIRECT_RESP, sizeof(REDIRECT_RESP) - 1, TCP_WRITE_FLAG_COPY);
+        tcp_output(tpcb);
+        tcp_close(tpcb);
+    }
+
     void handle_get_form(struct tcp_pcb* tpcb) {
-        char page_buf[2500];
-        int len = std::snprintf(page_buf, sizeof(page_buf),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/html\r\n"
-            "Connection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>WaitingServer Setup</title>"
-            "<style>"
-            "*{box-sizing:border-box;}body{background:#121212;color:#eee;font-family:-apple-system,sans-serif;margin:0;padding:20px;display:flex;justify-content:center;}"
-            ".card{background:#1e1e1e;border-radius:14px;padding:28px;width:100%%;max-width:420px;box-shadow:0 8px 24px rgba(0,0,0,0.6);border:1px solid #2a2a2a;}"
-            "h2{margin-top:0;color:#38bdf8;font-size:22px;display:flex;align-items:center;gap:8px;}"
-            "label{display:block;margin:14px 0 5px;font-size:13px;color:#94a3b8;font-weight:600;}"
-            "input{width:100%%;padding:11px 13px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:15px;outline:none;}"
-            "input:focus{border-color:#38bdf8;}"
-            "button{width:100%%;margin-top:22px;padding:13px;border-radius:8px;border:none;background:#0284c7;color:#fff;font-size:16px;font-weight:bold;cursor:pointer;}"
-            "button:hover{background:#0369a1;}"
-            ".note{font-size:12px;color:#64748b;margin-top:16px;text-align:center;}"
-            "</style></head><body>"
-            "<div class='card'>"
-            "<h2>&#10052; WaitingServer Setup</h2>"
-            "<form action='/save' method='GET'>"
-            "<label>Wi-Fi Network (SSID)</label>"
-            "<input type='text' name='ssid' value='%s' required>"
-            "<label>Wi-Fi Password</label>"
-            "<input type='password' name='pass' value='%s'>"
-            "<label>Primary Server Host / IP</label>"
-            "<input type='text' name='host' value='%s' required>"
-            "<label>Primary Server Port</label>"
-            "<input type='number' name='port' value='%u' required>"
-            "<label>Target MAC (Wake-on-LAN)</label>"
-            "<input type='text' name='mac' value='%s' required>"
-            "<button type='submit'>Save & Connect</button>"
-            "</form>"
-            "<div class='note'>Pico W will reboot and connect to this network.</div>"
-            "</div></body></html>",
+        // Static buffer to eliminate stack consumption
+        static char s_page_buf[6144];
+
+        // Format error modal snippet if previous failure occurred
+        char error_modal_buf[512] = {};
+        if (failure_reason[0] != '\0') {
+            std::snprintf(error_modal_buf, sizeof(error_modal_buf),
+                          PORTAL_ERROR_MODAL_TEMPLATE, failure_reason);
+        }
+
+        // Format auth options dropdown
+        char auth_options_buf[384] = {};
+        std::snprintf(auth_options_buf, sizeof(auth_options_buf),
+            "<option value='%lu'%s>WPA2 Mixed PSK (Default)</option>"
+            "<option value='%lu'%s>WPA2 AES</option>"
+            "<option value='%lu'%s>WPA TKIP</option>"
+            "<option value='0'%s>Open (No Password)</option>",
+            static_cast<unsigned long>(CYW43_AUTH_WPA2_MIXED_PSK),
+            (current_cfg.wifi_auth == CYW43_AUTH_WPA2_MIXED_PSK) ? " selected" : "",
+            static_cast<unsigned long>(CYW43_AUTH_WPA2_AES_PSK),
+            (current_cfg.wifi_auth == CYW43_AUTH_WPA2_AES_PSK) ? " selected" : "",
+            static_cast<unsigned long>(CYW43_AUTH_WPA_TKIP_PSK),
+            (current_cfg.wifi_auth == CYW43_AUTH_WPA_TKIP_PSK) ? " selected" : "",
+            (current_cfg.wifi_auth == CYW43_AUTH_OPEN) ? " selected" : ""
+        );
+
+        int len = std::snprintf(s_page_buf, sizeof(s_page_buf),
+            PORTAL_HTML_TEMPLATE,
+            error_modal_buf,
             current_cfg.wifi_ssid,
             current_cfg.wifi_password,
+            auth_options_buf,
+            static_cast<unsigned>(current_cfg.connect_attempts),
+            current_cfg.hostname,
+            current_cfg.motd,
             current_cfg.target_host,
-            current_cfg.target_port,
-            current_cfg.target_mac
+            current_cfg.target_mac,
+            static_cast<unsigned>(current_cfg.target_port)
         );
 
         if (len > 0) {
-            tcp_write(tpcb, page_buf, static_cast<u16_t>(len), TCP_WRITE_FLAG_COPY);
+            size_t actual_body_len = std::min(static_cast<size_t>(len), sizeof(s_page_buf) - 1);
+            char header_buf[160];
+            int hdr_len = std::snprintf(header_buf, sizeof(header_buf),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: close\r\n\r\n",
+                actual_body_len
+            );
+
+            std::printf("[HTTP] Serving setup page (%zu bytes) to %s\n",
+                        actual_body_len, ip4addr_ntoa(&tpcb->remote_ip));
+
+            err_t err1 = tcp_write(tpcb, header_buf, static_cast<u16_t>(hdr_len), TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+            err_t err2 = tcp_write(tpcb, s_page_buf, static_cast<u16_t>(actual_body_len), TCP_WRITE_FLAG_COPY);
+            if (err1 != ERR_OK || err2 != ERR_OK) {
+                std::printf("[HTTP] tcp_write failed: h_err=%d, b_err=%d\n", err1, err2);
+            }
             tcp_output(tpcb);
         }
         tcp_close(tpcb);
