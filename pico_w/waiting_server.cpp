@@ -14,17 +14,20 @@
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
 
-#include "include/config.hpp"
-#include "include/flash_config.hpp"
-#include "include/dhcp_server.hpp"
-#include "include/dns_server.hpp"
-#include "include/http_server.hpp"
-#include "include/packet_reader.hpp"
-#include "include/packet_writer.hpp"
-#include "include/server_status.hpp"
-#include "include/config_packets.hpp"
-#include "include/play_packets.hpp"
-#include "include/target_checker.hpp"
+#include "config.hpp"
+#include "flash_config.hpp"
+#include "dhcp_server.hpp"
+#include "dns_server.hpp"
+#include "http_server.hpp"
+#include "packet_reader.hpp"
+#include "packet_writer.hpp"
+#include "server_status.hpp"
+#include "config_packets.hpp"
+#include "play_packets.hpp"
+#include "target_checker.hpp"
+#include "client_connection.hpp"
+#include "entity_sync.hpp"
+
 
 // Global services
 static waiting_server::TargetChecker g_target_checker;
@@ -49,7 +52,7 @@ static void update_led(uint32_t now_ms, LedPattern pattern) {
     static bool current_state = false;
     bool new_state = false;
 
-    if (pattern == LedPattern::CaptivePortal) {
+    if (pattern == LedPattern::ServerRunning) {
         uint32_t phase = now_ms % 1600;
         if (phase < 200) {
             new_state = true;
@@ -60,7 +63,7 @@ static void update_led(uint32_t now_ms, LedPattern pattern) {
         } else {
             new_state = false;
         }
-    } else { // ServerRunning
+    } else { // CaptivePortal
         uint32_t phase = now_ms % 2000;
         new_state = (phase < 1000);
     }
@@ -72,7 +75,7 @@ static void update_led(uint32_t now_ms, LedPattern pattern) {
 }
 
 // Forward declaration
-struct ClientConnection;
+using waiting_server::ClientConnection;
 static void close_client(ClientConnection* client);
 static void pump_tx(ClientConnection* client);
 static void advance_config_queue(ClientConnection* client);
@@ -80,66 +83,6 @@ static void advance_play_queue(ClientConnection* client);
 static void send_play_transfer(ClientConnection* client);
 static void send_play_keepalive(ClientConnection* client, uint32_t now);
 static void send_play_action_bar(ClientConnection* client, std::string_view text);
-
-// Static Client Connection representation (Zero heap allocation)
-struct ClientConnection {
-    tcp_pcb* pcb = nullptr;
-    size_t index = 0;
-
-    enum class State : uint8_t {
-        Handshake,
-        Status,
-        Login,
-        Configuration,
-        Play,
-        Closed
-    } state = State::Handshake;
-
-    std::array<std::byte, 1024> rx_buffer = {};
-    size_t rx_len = 0;
-
-    // Fixed pre-allocated TX buffer for dynamic responses
-    std::array<std::byte, 1024> tx_buffer = {};
-
-    char player_name[20] = {};
-    std::array<std::byte, 16> player_uuid = {};
-
-    // Current streaming slice
-    const uint8_t* tx_stream_ptr = nullptr;
-    size_t tx_stream_remaining = 0;
-    bool tx_is_rom = false;
-
-    // Progression in packet sequence
-    size_t config_packet_index = 0;
-    size_t play_packet_index = 0;
-    bool sending_config_queue = false;
-    bool sending_play_queue = false;
-
-    uint32_t last_keepalive_sent_ms = 0;
-    uint32_t last_actionbar_sent_ms = 0;
-
-    bool is_active = false;
-    bool close_after_sent = false;
-
-    void reset() {
-        pcb = nullptr;
-        state = State::Handshake;
-        rx_len = 0;
-        player_name[0] = '\0';
-        player_uuid.fill(std::byte{0});
-        tx_stream_ptr = nullptr;
-        tx_stream_remaining = 0;
-        tx_is_rom = false;
-        config_packet_index = 0;
-        play_packet_index = 0;
-        sending_config_queue = false;
-        sending_play_queue = false;
-        last_keepalive_sent_ms = 0;
-        last_actionbar_sent_ms = 0;
-        is_active = false;
-        close_after_sent = false;
-    }
-};
 
 static ClientConnection g_clients[waiting_server::MAX_CLIENTS];
 
@@ -160,6 +103,9 @@ static ClientConnection* allocate_client(tcp_pcb* pcb) {
 // Safely close connection and release static slot
 static void close_client(ClientConnection* client) {
     if (!client) return;
+    if (client->is_active && client->state == ClientConnection::State::Play && client->is_spawned_in_play) {
+        waiting_server::broadcast_player_disconnect(client, g_clients, waiting_server::MAX_CLIENTS);
+    }
     if (client->pcb) {
         tcp_arg(client->pcb, nullptr);
         tcp_recv(client->pcb, nullptr);
@@ -327,8 +273,12 @@ static void advance_play_queue(ClientConnection* client) {
         client->sending_play_queue = false;
         client->tx_stream_ptr = nullptr;
         client->tx_stream_remaining = 0;
+        client->is_spawned_in_play = true;
         std::printf("[PLAY] Player '%s' spawned in lobby world! (X=%.1f, Y=%.1f, Z=%.1f)\n",
                     client->player_name, waiting_server::SPAWN_X, waiting_server::SPAWN_Y, waiting_server::SPAWN_Z);
+
+        // Cross-spawn with other players already in Play state
+        waiting_server::broadcast_player_spawn(client, g_clients, waiting_server::MAX_CLIENTS);
 
         if (g_target_checker.is_online) {
             send_play_transfer(client);
@@ -569,8 +519,65 @@ static bool handle_client_packet(ClientConnection* client, int32_t packet_id, st
                 return true;
             } else if (packet_id == 0x1C) { // KeepAlive response
                 return true;
+            } else if (packet_id == 0x1E) { // Move Player Pos
+                auto x_opt = waiting_server::read_double(payload);
+                auto y_opt = waiting_server::read_double(payload);
+                auto z_opt = waiting_server::read_double(payload);
+                auto flag_opt = waiting_server::read_byte(payload);
+                if (x_opt && y_opt && z_opt && flag_opt) {
+                    client->x = *x_opt;
+                    client->y = *y_opt;
+                    client->z = *z_opt;
+                    client->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                    waiting_server::broadcast_player_movement(client, g_clients, waiting_server::MAX_CLIENTS);
+                }
+                return true;
+            } else if (packet_id == 0x1F) { // Move Player PosRot
+                auto x_opt = waiting_server::read_double(payload);
+                auto y_opt = waiting_server::read_double(payload);
+                auto z_opt = waiting_server::read_double(payload);
+                auto yrot_opt = waiting_server::read_float(payload);
+                auto xrot_opt = waiting_server::read_float(payload);
+                auto flag_opt = waiting_server::read_byte(payload);
+                if (x_opt && y_opt && z_opt && yrot_opt && xrot_opt && flag_opt) {
+                    client->x = *x_opt;
+                    client->y = *y_opt;
+                    client->z = *z_opt;
+                    client->yrot = *yrot_opt;
+                    client->xrot = *xrot_opt;
+                    client->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                    waiting_server::broadcast_player_movement(client, g_clients, waiting_server::MAX_CLIENTS);
+                }
+                return true;
+            } else if (packet_id == 0x20) { // Move Player Rot
+                auto yrot_opt = waiting_server::read_float(payload);
+                auto xrot_opt = waiting_server::read_float(payload);
+                auto flag_opt = waiting_server::read_byte(payload);
+                if (yrot_opt && xrot_opt && flag_opt) {
+                    client->yrot = *yrot_opt;
+                    client->xrot = *xrot_opt;
+                    client->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                    waiting_server::broadcast_player_movement(client, g_clients, waiting_server::MAX_CLIENTS);
+                }
+                return true;
+            } else if (packet_id == 0x21) { // Move Player StatusOnly
+                auto flag_opt = waiting_server::read_byte(payload);
+                if (flag_opt) {
+                    client->on_ground = (static_cast<uint8_t>(*flag_opt) & 1) != 0;
+                }
+                return true;
+            } else if (packet_id == 0x2B) { // Player Input (Sneak)
+                auto flag_opt = waiting_server::read_byte(payload);
+                if (flag_opt) {
+                    bool sneaking = (static_cast<uint8_t>(*flag_opt) & 0x20) != 0;
+                    if (sneaking != client->is_sneaking) {
+                        client->is_sneaking = sneaking;
+                        waiting_server::broadcast_player_sneak(client, g_clients, waiting_server::MAX_CLIENTS);
+                    }
+                }
+                return true;
             }
-            // Allow player position / movement packets
+            // Allow other play packets
             return true;
         }
 
@@ -679,6 +686,9 @@ static void on_tcp_err(void* arg, err_t err) {
     (void)err;
     auto* client = static_cast<ClientConnection*>(arg);
     if (client) {
+        if (client->is_active && client->state == ClientConnection::State::Play && client->is_spawned_in_play) {
+            waiting_server::broadcast_player_disconnect(client, g_clients, waiting_server::MAX_CLIENTS);
+        }
         client->pcb = nullptr; // lwIP already deallocated PCB
         client->reset();
     }
@@ -749,10 +759,9 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    std::printf("\n==========================================\n");
-    std::printf("  WaitingServer: Pico W Minecraft Stub   \n");
-    std::printf("==========================================\n");
+    std::printf("----- Pico Minecraft 26.2 Waiting Server -----\n\n");
 
+    // TODO: Make wifi connection compatible with other countries too
     // 1. Initialize CYW43 Wi-Fi hardware and lwIP with regional regulatory channels
     if (cyw43_arch_init_with_country(CYW43_COUNTRY_INDIA) != 0) {
         std::printf("[ERROR] Failed to initialize CYW43 hardware!\n");
@@ -773,6 +782,7 @@ int main() {
         std::printf("         Target : '%s:%d' (%s)\n",
                     active_cfg.target_host, active_cfg.target_port, active_cfg.target_mac);
     } else {
+        // TODO: Insted of falling back to config.hpp, switch to captive portal to enter configs
         std::printf("[CONFIG] No saved Flash configuration found. Using compile-time defaults.\n");
         std::strncpy(active_cfg.wifi_ssid, waiting_server::WIFI_SSID, sizeof(active_cfg.wifi_ssid) - 1);
         std::strncpy(active_cfg.wifi_password, waiting_server::WIFI_PASSWORD, sizeof(active_cfg.wifi_password) - 1);
@@ -786,11 +796,13 @@ int main() {
     if (active_cfg.wifi_ssid[0] != '\0') {
         cyw43_arch_enable_sta_mode();
         if (netif_default != nullptr) {
+            // TODO: Hostname should be configuarable via captive portal
             netif_set_hostname(netif_default, "WaitingServer");
         }
 
         std::printf("[INFO] Connecting to Wi-Fi '%s'...\n", active_cfg.wifi_ssid);
 
+        // TODO: Configure attempts and auth methords via captive portal (one mthord only)
         for (int attempt = 1; attempt <= 3 && !wifi_connected; ++attempt) {
             std::printf("[INFO] Wi-Fi connection attempt %d/3...\n", attempt);
 
@@ -846,6 +858,8 @@ int main() {
         }
     }
 
+    //TODO: [New idea] Make it so that when user enters captive portal after a failed initializzation (eg: wrong password or auth methord), show a section where user can see the errors that occured on the previous initialization.
+
     // 4. Branch based on Wi-Fi connection result
     if (wifi_connected) {
         g_run_mode = RunMode::ServerRunning;
@@ -878,10 +892,9 @@ int main() {
         cyw43_arch_disable_sta_mode();
 
         std::printf("\n==========================================\n");
-        std::printf(">>> STARTING CAPTIVE PORTAL HOTSPOT <<<\n");
+        std::printf(">>> STARTING CAPTIVE PORTAL <<<\n");
         std::printf("Hotspot SSID : WaitingServer-Setup\n");
         std::printf("Setup URL    : http://192.168.4.1\n");
-        std::printf("LED Pattern  : Double-blink (200ms on, 200ms off, 200ms on, 1000ms off)\n");
         std::printf("==========================================\n\n");
 
         cyw43_arch_enable_ap_mode("WaitingServer-Setup", nullptr, CYW43_AUTH_OPEN);
@@ -906,14 +919,11 @@ int main() {
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         if (g_run_mode == RunMode::CaptivePortal) {
-            // Blink LED: 200ms on, 200ms off, 200ms on, 1000ms off
             update_led(now, LedPattern::CaptivePortal);
 
-            // Poll HTTP server for reboot requests
             g_http_server.poll(now);
 
-        } else { // RunMode::ServerRunning
-            // Blink LED: 1000ms on, 1000ms off
+        } else {
             update_led(now, LedPattern::ServerRunning);
 
             // Check if any clients are currently connected and waiting
@@ -964,19 +974,19 @@ int main() {
             }
 
             // Status log every 10 seconds
-            if (now - last_log_time >= 10000) {
-                last_log_time = now;
-                uptime_seconds += 10;
-                char ip_buf[16] = "0.0.0.0";
-                if (netif_default != nullptr) {
-                    ip4addr_ntoa_r(netif_ip4_addr(netif_default), ip_buf, sizeof(ip_buf));
-                }
-                std::printf("[STATUS] IP: %s | Uptime: %lu s | Target: %s (%s)\n",
-                            ip_buf,
-                            static_cast<unsigned long>(uptime_seconds),
-                            g_target_checker.is_online ? "ONLINE" : "OFFLINE",
-                            g_target_checker.target_host);
-            }
+            // if (now - last_log_time >= 10000) {
+            //     last_log_time = now;
+            //     uptime_seconds += 10;
+            //     char ip_buf[16] = "0.0.0.0";
+            //     if (netif_default != nullptr) {
+            //         ip4addr_ntoa_r(netif_ip4_addr(netif_default), ip_buf, sizeof(ip_buf));
+            //     }
+            //     std::printf("[STATUS] IP: %s | Uptime: %lu s | Target: %s (%s)\n",
+            //                 ip_buf,
+            //                 static_cast<unsigned long>(uptime_seconds),
+            //                 g_target_checker.is_online ? "ONLINE" : "OFFLINE",
+            //                 g_target_checker.target_host);
+            // }
         }
 
         sleep_ms(1);

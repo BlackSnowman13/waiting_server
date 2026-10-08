@@ -11,7 +11,7 @@ import sys
 
 def main():
     src_file = 'old/include/captured_packets.hpp'
-    dst_file = 'include/play_packets.hpp'
+    dst_file = 'shared/include/play_packets.hpp'
 
     print(f"Reading from {src_file}...")
     with open(src_file, 'r') as f:

@@ -10,9 +10,9 @@ namespace waiting_server {
 
 inline constexpr int32_t LOBBY_CENTER_CHUNK_X = 0;
 inline constexpr int32_t LOBBY_CENTER_CHUNK_Z = 0;
-inline constexpr double LOBBY_SPAWN_X = 8.5;
-inline constexpr double LOBBY_SPAWN_Y = 120.0;
-inline constexpr double LOBBY_SPAWN_Z = 8.5;
+inline constexpr double LOBBY_SPAWN_X = -2.0;
+inline constexpr double LOBBY_SPAWN_Y = 125.0;
+inline constexpr double LOBBY_SPAWN_Z = 10.0;
 
 // Chunk (-2, -2) [VOID] - Size: 1123 bytes
 alignas(4) inline constexpr uint8_t lobby_chunk_000[1123] = {

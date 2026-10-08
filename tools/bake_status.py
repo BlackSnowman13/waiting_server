@@ -131,10 +131,10 @@ inline constexpr size_t STATUS_PACKET_OFFLINE_SIZE = {len(offline_pkt)};
 }} // namespace waiting_server
 """
 
-    with open('include/server_status.hpp', 'w') as f:
+    with open('shared/include/server_status.hpp', 'w') as f:
         f.write(header_content)
 
-    print(f"Generated include/server_status.hpp:")
+    print(f"Generated shared/include/server_status.hpp:")
     print(f"  - Online Packet:  {len(online_pkt)} bytes")
     print(f"  - Offline Packet: {len(offline_pkt)} bytes")
 

@@ -593,7 +593,7 @@ def main():
                         help="Path to block states registry JSON")
     parser.add_argument("--biomes", default="tools/biomes_776.json",
                         help="Path to biomes registry JSON")
-    parser.add_argument("-o", "--output", default="include/lobby_chunks.hpp",
+    parser.add_argument("-o", "--output", default="shared/include/lobby_chunks.hpp",
                         help="Output C++ header file")
 
     args = parser.parse_args()

@@ -228,7 +228,7 @@ def main():
     parser.add_argument("--mca", help="Path to .mca region file")
     parser.add_argument("--chunk-x", type=int, default=-1, help="Chunk X coordinate")
     parser.add_argument("--chunk-z", type=int, default=0, help="Chunk Z coordinate")
-    parser.add_argument("-o", "--output", default="include/lobby_chunk.hpp", help="Output C++ header file")
+    parser.add_argument("-o", "--output", default="shared/include/lobby_chunk.hpp", help="Output C++ header file")
     args = parser.parse_args()
 
     if args.captured:

@@ -1,10 +1,13 @@
-build
+build/
+*/build/
 !.vscode/*
 *.uf2
+*/*.uf2
 old/
 tools/*.json
 tools/__pycache__
 AGENTS.md
 config.txt
+*/config.txt
 .cache/
 .vscode
