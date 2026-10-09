@@ -14,19 +14,19 @@ namespace waiting_server {
 
 // Helper: Sends a complete spawn sequence for 'target' to 'recipient'
 // Packets sent:
-// 1. Player Info Update (0x46) - Adds player to tab list with offline default skin
+// 1. Player Info Update (0x47) - Adds player to tab list with offline default skin
 // 2. Add Entity (0x01) - Spawns player entity model
-// 3. Set Entity Data / Metadata (0x63) - Outer skin layers (0x7F) + current sneak state & pose
-// 4. Rotate Head (0x53) - Sets looking direction
+// 3. Set Entity Data / Metadata (0x65) - Outer skin layers (0x7F) + current sneak state & pose
+// 4. Rotate Head (0x55) - Sets looking direction
 inline void send_spawn_player_packets(ClientConnection* recipient, const ClientConnection* target) {
     if (!recipient || !recipient->pcb || !target) return;
 
     int32_t entity_id = 300 + static_cast<int32_t>(target->index);
 
-    // 1. Player Info Update (0x46)
+    // 1. Player Info Update (0x47)
     std::array<std::byte, 128> info_buf;
     PacketWriter info_writer(info_buf);
-    if (info_writer.write_varint(0x46) &&
+    if (info_writer.write_varint(0x47) &&
         info_writer.write_byte(std::byte{0xFF}) && // All actions mask
         info_writer.write_varint(1) &&              // Count: 1
         info_writer.write_uuid(target->player_uuid) &&
@@ -51,7 +51,7 @@ inline void send_spawn_player_packets(ClientConnection* recipient, const ClientC
     if (spawn_writer.write_varint(0x01) &&
         spawn_writer.write_varint(entity_id) &&
         spawn_writer.write_uuid(target->player_uuid) &&
-        spawn_writer.write_varint(156) && // Entity Type: Player (156 in Protocol 776 / 26.2)
+        spawn_writer.write_varint(159) && // Entity Type: Player (159 in Protocol 777 / 26.3)
         spawn_writer.write_double(target->x) &&
         spawn_writer.write_double(target->y) &&
         spawn_writer.write_double(target->z) &&
@@ -66,10 +66,10 @@ inline void send_spawn_player_packets(ClientConnection* recipient, const ClientC
         }
     }
 
-    // 3. Set Entity Data / Metadata (0x63)
+    // 3. Set Entity Data / Metadata (0x65)
     std::array<std::byte, 64> meta_buf;
     PacketWriter meta_writer(meta_buf);
-    if (meta_writer.write_varint(0x63) &&
+    if (meta_writer.write_varint(0x65) &&
         meta_writer.write_varint(entity_id) &&
         // Index 0: Shared flags (Byte) - bit 1 (0x02) is shift key down
         meta_writer.write_byte(std::byte{0}) &&
@@ -91,10 +91,10 @@ inline void send_spawn_player_packets(ClientConnection* recipient, const ClientC
         }
     }
 
-    // 4. Rotate Head (0x53)
+    // 4. Rotate Head (0x55)
     std::array<std::byte, 32> head_buf;
     PacketWriter head_writer(head_buf);
-    if (head_writer.write_varint(0x53) &&
+    if (head_writer.write_varint(0x55) &&
         head_writer.write_varint(entity_id) &&
         head_writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(target->yrot * 256.0f / 360.0f)))) {
         auto head_span = head_writer.finalize();
@@ -122,7 +122,7 @@ inline void broadcast_player_spawn(ClientConnection* new_player, ClientConnectio
     }
 }
 
-// Broadcasts movement (Teleport Entity 0x7D + Rotate Head 0x53) with deadband thresholding
+// Broadcasts movement (Teleport Entity 0x80 + Rotate Head 0x55) with deadband thresholding
 inline void broadcast_player_movement(ClientConnection* sender, ClientConnection* clients, size_t max_clients) {
     if (!sender || !sender->is_active || sender->state != ClientConnection::State::Play || !sender->is_spawned_in_play) {
         return;
@@ -147,10 +147,10 @@ inline void broadcast_player_movement(ClientConnection* sender, ClientConnection
 
     int32_t entity_id = 300 + static_cast<int32_t>(sender->index);
 
-    // Build Teleport Entity (0x7D)
+    // Build Teleport Entity (0x80)
     std::array<std::byte, 128> tele_buf;
     PacketWriter tele_writer(tele_buf);
-    if (!tele_writer.write_varint(0x7D) ||
+    if (!tele_writer.write_varint(0x80) ||
         !tele_writer.write_varint(entity_id) ||
         !tele_writer.write_double(sender->x) ||
         !tele_writer.write_double(sender->y) ||
@@ -170,10 +170,10 @@ inline void broadcast_player_movement(ClientConnection* sender, ClientConnection
     auto tele_span = tele_writer.finalize();
     if (!tele_span) return;
 
-    // Build Rotate Head (0x53)
+    // Build Rotate Head (0x55)
     std::array<std::byte, 32> rot_buf;
     PacketWriter rot_writer(rot_buf);
-    if (!rot_writer.write_varint(0x53) ||
+    if (!rot_writer.write_varint(0x55) ||
         !rot_writer.write_varint(entity_id) ||
         !rot_writer.write_byte(static_cast<std::byte>(static_cast<int8_t>(sender->yrot * 256.0f / 360.0f)))) {
         return;
@@ -196,7 +196,7 @@ inline void broadcast_player_movement(ClientConnection* sender, ClientConnection
     }
 }
 
-// Broadcasts sneak / crouch state (Set Entity Data 0x63)
+// Broadcasts sneak / crouch state (Set Entity Data 0x65)
 inline void broadcast_player_sneak(ClientConnection* sender, ClientConnection* clients, size_t max_clients) {
     if (!sender || !sender->is_active || sender->state != ClientConnection::State::Play || !sender->is_spawned_in_play) {
         return;
@@ -206,7 +206,7 @@ inline void broadcast_player_sneak(ClientConnection* sender, ClientConnection* c
 
     std::array<std::byte, 64> meta_buf;
     PacketWriter writer(meta_buf);
-    if (!writer.write_varint(0x63) ||
+    if (!writer.write_varint(0x65) ||
         !writer.write_varint(entity_id) ||
         // Index 0: Shared flags (Byte) - bit 1 (0x02) = shift key down
         !writer.write_byte(std::byte{0}) ||
@@ -241,10 +241,10 @@ inline void broadcast_player_disconnect(ClientConnection* departing, ClientConne
 
     int32_t entity_id = 300 + static_cast<int32_t>(departing->index);
 
-    // 1. Remove Entities (0x4D)
+    // 1. Remove Entities (0x4E)
     std::array<std::byte, 32> ent_buf;
     PacketWriter ent_writer(ent_buf);
-    if (!ent_writer.write_varint(0x4D) ||
+    if (!ent_writer.write_varint(0x4E) ||
         !ent_writer.write_varint(1) ||
         !ent_writer.write_varint(entity_id)) {
         return;
@@ -252,10 +252,10 @@ inline void broadcast_player_disconnect(ClientConnection* departing, ClientConne
     auto ent_span = ent_writer.finalize();
     if (!ent_span) return;
 
-    // 2. Player Info Remove (0x45)
+    // 2. Player Info Remove (0x46)
     std::array<std::byte, 32> info_buf;
     PacketWriter info_writer(info_buf);
-    if (!info_writer.write_varint(0x45) ||
+    if (!info_writer.write_varint(0x46) ||
         !info_writer.write_varint(1) ||
         !info_writer.write_uuid(departing->player_uuid)) {
         return;

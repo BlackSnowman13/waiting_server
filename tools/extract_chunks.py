@@ -3,13 +3,13 @@
 tools/extract_chunks.py
 
 Extracts a range of Minecraft chunks (e.g. 3x3 grid) from a single Anvil (.mca)
-region file, serializes them ahead-of-time (AOT) into Protocol 776
-ClientboundLevelChunkWithLight (0x2D) wire packets, and emits a modular C++ header
+region file, serializes them ahead-of-time (AOT) into Protocol 777
+ClientboundLevelChunkWithLight (0x2E) wire packets, and emits a modular C++ header
 'include/lobby_chunks.hpp' ready for compilation into Raspberry Pi Pico W Flash ROM.
 
 Features:
 - Pure Python 3, zero external pip dependencies (self-contained binary NBT parser).
-- Full 26.2 (Protocol 776) block state mapping with property resolution.
+- Full 26.3 (Protocol 777) block state mapping with property resolution.
 - Hybrid lighting engine (uses MCA light if present, synthesizes top-down sunlight).
 - Auto-detects safe spawn coordinates on top of terrain.
 """
@@ -42,20 +42,15 @@ def encode_varint(val: int) -> bytes:
 
 def encode_bitset(mask: int) -> bytes:
     """
-    Serializes a BitSet according to Minecraft FriendlyByteBuf:
-    VarInt length of 64-bit longs, followed by each long in big-endian format.
+    Serializes a BitSet according to Minecraft 26.3 (ByteBufCodecs.BIT_SET):
+    FriendlyByteBuf.writeByteArray(output, value.toByteArray()).
+    VarInt length of bytes, followed by bytes in little-endian order.
     """
     if mask == 0:
         return encode_varint(0)
-    longs = []
-    temp = mask
-    while temp > 0:
-        longs.append(temp & 0xFFFFFFFFFFFFFFFF)
-        temp >>= 64
-    out = bytearray(encode_varint(len(longs)))
-    for l in longs:
-        out.extend(struct.pack('>Q', l))
-    return bytes(out)
+    nbytes = (mask.bit_length() + 7) // 8
+    raw_bytes = mask.to_bytes(nbytes, 'little')
+    return encode_varint(nbytes) + raw_bytes
 
 ###############################################################################
 # Zero-Dependency Binary NBT Reader
@@ -222,11 +217,11 @@ def read_mca_chunk(region_source: str, chunk_x: int, chunk_z: int) -> dict:
     return reader.read_root()
 
 ###############################################################################
-# Chunk Serialization (0x2D ClientboundLevelChunkWithLight)
+# Chunk Serialization (0x2E ClientboundLevelChunkWithLight)
 ###############################################################################
 
 def resolve_block_state(block_info: dict, registry: dict) -> int:
-    """Resolves an NBT palette entry to a Protocol 776 global block state ID."""
+    """Resolves an NBT palette entry to a Protocol 777 global block state ID."""
     name = block_info.get("Name", "minecraft:air")
     props = block_info.get("Properties", {})
     entry = registry.get(name)
@@ -282,7 +277,7 @@ def serialize_chunk_packet(
     biome_registry: dict
 ) -> tuple[bytes, int]:
     """
-    Serializes a single chunk into a full 0x2D wire packet.
+    Serializes a single chunk into a full 0x2E wire packet.
     Returns: (packet_wire_bytes, center_block_top_y)
     """
     # Build 24 sections map (-4 to 19)
@@ -464,7 +459,7 @@ def serialize_chunk_packet(
 
     # 5. Full Packet Assembly
     body = bytearray()
-    body.extend(encode_varint(0x2D))  # ClientboundLevelChunkWithLightPacket
+    body.extend(encode_varint(0x2E))  # ClientboundLevelChunkWithLightPacket
     body.extend(struct.pack('>ii', chunk_x, chunk_z))
     body.extend(heightmaps_data)
     body.extend(encode_varint(len(section_buf)))
@@ -478,7 +473,7 @@ def serialize_chunk_packet(
 
 def serialize_empty_chunk(chunk_x: int, chunk_z: int) -> bytes:
     """
-    Serializes a 100% empty (void / air) chunk packet for Minecraft 26.2 (Protocol 776).
+    Serializes a 100% empty (void / air) chunk packet for Minecraft 26.3 (Protocol 777).
     Used for 1-chunk boundary padding so that visible chunks can mesh fully against the void.
     """
     # 24 empty sections (Y = -4 to 19)
@@ -488,7 +483,7 @@ def serialize_empty_chunk(chunk_x: int, chunk_z: int) -> bytes:
         section_buf.append(0)                         # block states bits = 0
         section_buf.extend(encode_varint(0))          # air (id = 0)
         section_buf.append(0)                         # biomes bits = 0
-        section_buf.extend(encode_varint(40))         # plains (id = 40)
+        section_buf.extend(encode_varint(41))         # plains (id = 41 in 26.3)
 
     # 3 heightmaps, each 37 longs of 0
     heightmaps_data = bytearray()
@@ -510,7 +505,7 @@ def serialize_empty_chunk(chunk_x: int, chunk_z: int) -> bytes:
     light_data.extend(encode_varint(0))              # num block updates = 0
 
     body = bytearray()
-    body.extend(encode_varint(0x2D))                 # ClientboundLevelChunkWithLightPacket
+    body.extend(encode_varint(0x2E))                 # ClientboundLevelChunkWithLightPacket
     body.extend(struct.pack('>ii', chunk_x, chunk_z))
     body.extend(heightmaps_data)
     body.extend(encode_varint(len(section_buf)))
@@ -589,9 +584,9 @@ def main():
     parser.add_argument("--spawn-x", type=float, help="Override spawn X coordinate")
     parser.add_argument("--spawn-y", type=float, help="Override spawn Y coordinate")
     parser.add_argument("--spawn-z", type=float, help="Override spawn Z coordinate")
-    parser.add_argument("--registry", default="tools/block_states_776.json",
+    parser.add_argument("--registry", default="tools/block_states_777.json",
                         help="Path to block states registry JSON")
-    parser.add_argument("--biomes", default="tools/biomes_776.json",
+    parser.add_argument("--biomes", default="tools/biomes_777.json",
                         help="Path to biomes registry JSON")
     parser.add_argument("-o", "--output", default="shared/include/lobby_chunks.hpp",
                         help="Output C++ header file")

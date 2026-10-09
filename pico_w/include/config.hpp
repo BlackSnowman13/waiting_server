@@ -20,7 +20,7 @@ inline constexpr uint16_t    TARGET_PORT     = 25565;
 inline constexpr const char* TARGET_MAC      = "AA:BB:CC:DD:EE:FF";
 
 // Minecraft Protocol Configuration
-inline constexpr int32_t     PROTOCOL_VERSION = 776; // 26.2 (compatible with 26.x)
+inline constexpr int32_t     PROTOCOL_VERSION = 777; // 26.3 (compatible with 26.x)
 inline constexpr const char* VERSION_NAME     = "● Pico W Ready";
 
 // Static Client Connection Pool Size

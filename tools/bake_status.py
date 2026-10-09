@@ -3,7 +3,7 @@
 tools/bake_status.py
 
 Bakes Minecraft Server List Ping (Status Response, Packet ID 0x00) static slices
-ahead-of-time (AOT) into Flash ROM byte arrays for Protocol 776 / Minecraft 26.2.
+ahead-of-time (AOT) into Flash ROM byte arrays for Protocol 777 / Minecraft 26.3.
 
 Features:
 - Full 64x64 PNG base64 favicon included
@@ -90,13 +90,13 @@ def main():
     placeholder = "___MOTD_MARKER___"
 
     # Online JSON split
-    _, online_json = build_packet("● Online", 776, placeholder, "● Primary server is ONLINE (Ready to join)", "green", favicon)
+    _, online_json = build_packet("● Online", 777, placeholder, "● Primary server is ONLINE (Ready to join)", "green", favicon)
     pos_online = online_json.find(placeholder.encode('utf-8'))
     online_prefix = online_json[:pos_online]
     online_suffix = online_json[pos_online + len(placeholder):]
 
     # Offline JSON split
-    _, offline_json = build_packet("● Sleeping", 776, placeholder, "● Primary server is sleeping (Join to wake)", "gold", favicon)
+    _, offline_json = build_packet("● Sleeping", 777, placeholder, "● Primary server is sleeping (Join to wake)", "gold", favicon)
     pos_offline = offline_json.find(placeholder.encode('utf-8'))
     offline_prefix = offline_json[:pos_offline]
     offline_suffix = offline_json[pos_offline + len(placeholder):]
@@ -109,7 +109,7 @@ namespace waiting_server {{
 
 // =============================================================================
 // Ahead-of-Time (AOT) Baked Minecraft Status Response Slices (ID 0x00)
-// Protocol Version: 776 (Minecraft 1.21.4 / 1.21.5 / 26.2)
+// Protocol Version: 777 (Minecraft 26.3)
 // Slices stored in Flash ROM for dynamic MOTD assembly without 12KB SRAM buffer.
 // =============================================================================
 

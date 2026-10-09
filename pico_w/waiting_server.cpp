@@ -201,9 +201,9 @@ static void advance_play_queue(ClientConnection* client) {
             client->tx_stream_remaining = sizeof(waiting_server::play_packet_009);
             client->tx_is_rom = false;
             client->play_packet_index++;
-        } else if (client->play_packet_index == 12) { // Player Info Update (ID 0x46)
+        } else if (client->play_packet_index == 12) { // Player Info Update (ID 0x47)
             waiting_server::PacketWriter writer(client->tx_buffer);
-            if (writer.write_varint(0x46) &&
+            if (writer.write_varint(0x47) &&
                 writer.write_byte(std::byte{0xFF}) && // action mask (all actions)
                 writer.write_varint(1) &&              // number of entries
                 writer.write_uuid(client->player_uuid) &&
@@ -229,9 +229,9 @@ static void advance_play_queue(ClientConnection* client) {
             } else {
                 close_client(client);
             }
-        } else if (client->play_packet_index == 19) { // Set Chunk Cache Center (ID 0x5E)
+        } else if (client->play_packet_index == 19) { // Set Chunk Cache Center (ID 0x60)
             waiting_server::PacketWriter writer(client->tx_buffer);
-            if (writer.write_varint(0x5E) &&
+            if (writer.write_varint(0x60) &&
                 writer.write_varint(waiting_server::LOBBY_CENTER_CHUNK_X) &&
                 writer.write_varint(waiting_server::LOBBY_CENTER_CHUNK_Z)) {
                 auto resp = writer.finalize();
@@ -253,10 +253,10 @@ static void advance_play_queue(ClientConnection* client) {
             client->tx_is_rom = true;
         }
     } else if (client->play_packet_index == waiting_server::NUM_PLAY_PACKETS) {
-        // Send Entity Metadata (0x63) to show player skin layers and finalize spawn
+        // Send Entity Metadata (0x65) to show player skin layers and finalize spawn
         waiting_server::PacketWriter writer(client->tx_buffer);
         int32_t entity_id = 300 + static_cast<int32_t>(client->index);
-        if (writer.write_varint(0x63) &&
+        if (writer.write_varint(0x65) &&
             writer.write_varint(entity_id) &&
             writer.write_byte(std::byte{16}) && // Index 16: skin display mask
             writer.write_varint(0) &&            // Type 0: Byte
@@ -336,12 +336,12 @@ static void pump_tx(ClientConnection* client) {
     tcp_output(client->pcb);
 }
 
-// Sends a Play KeepAlive packet (0x2C)
+// Sends a Play KeepAlive packet (0x2D)
 static void send_play_keepalive(ClientConnection* client, uint32_t now) {
     if (!client || !client->pcb || client->sending_play_queue) return;
     uint64_t keepalive_id = static_cast<uint64_t>(now);
     waiting_server::PacketWriter writer(client->tx_buffer);
-    if (writer.write_varint(0x2C) && writer.write_ulong(keepalive_id)) {
+    if (writer.write_varint(0x2D) && writer.write_ulong(keepalive_id)) {
         auto resp = writer.finalize();
         if (resp) {
             send_dynamic_packet(client, resp->data(), resp->size(), false);
@@ -349,11 +349,11 @@ static void send_play_keepalive(ClientConnection* client, uint32_t now) {
     }
 }
 
-// Sends an Action Bar message to the player (Packet ID 0x57 in Protocol 776)
+// Sends an Action Bar message to the player (Packet ID 0x59 in Protocol 777)
 static void send_play_action_bar(ClientConnection* client, std::string_view text) {
     if (!client || !client->pcb || client->sending_play_queue) return;
     waiting_server::PacketWriter writer(client->tx_buffer);
-    if (writer.write_varint(0x57) &&
+    if (writer.write_varint(0x59) &&
         writer.write_byte(std::byte{0x08}) &&
         writer.write_ushort(static_cast<uint16_t>(text.size()))) {
         bool ok = true;
@@ -372,7 +372,7 @@ static void send_play_action_bar(ClientConnection* client, std::string_view text
     }
 }
 
-// Sends the Play Transfer packet (0x81) to redirect player to primary server
+// Sends the Play Transfer packet (0x84) to redirect player to primary server
 static void send_play_transfer(ClientConnection* client) {
     if (!client || !client->pcb || client->sending_play_queue) return;
     const char* transfer_target = g_target_checker.target_ip_str[0] != '\0' ?
@@ -381,7 +381,7 @@ static void send_play_transfer(ClientConnection* client) {
     std::printf("[TRANSFER] Primary server ONLINE! Transferring '%s' to %s:%d\n",
                 client->player_name, transfer_target, g_target_checker.target_port);
     waiting_server::PacketWriter writer(client->tx_buffer);
-    if (writer.write_varint(0x81) &&
+    if (writer.write_varint(0x84) &&
         writer.write_string(transfer_target) &&
         writer.write_varint(g_target_checker.target_port)) {
         auto resp = writer.finalize();
@@ -564,7 +564,7 @@ static bool handle_client_packet(ClientConnection* client, int32_t packet_id, st
         case ClientConnection::State::Play: {
             if (packet_id == 0x00) { // Teleport Confirm
                 return true;
-            } else if (packet_id == 0x0C || packet_id == 0x08) { // Chunk Batch Received
+            } else if (packet_id == 0x0B || packet_id == 0x0C || packet_id == 0x08) { // Chunk Batch Received
                 return true;
             } else if (packet_id == 0x1C) { // KeepAlive response
                 return true;
@@ -873,7 +873,7 @@ int main() {
         sleep_ms(50);
     }
 
-    std::printf("----- Pico Minecraft 26.2 Waiting Server -----\n\n");
+    std::printf("----- Pico Minecraft 26.3 Waiting Server -----\n\n");
 
     // TODO: Make wifi connection compatible with other countries too
     // 1. Initialize CYW43 Wi-Fi hardware and lwIP with regional regulatory channels

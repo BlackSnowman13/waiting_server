@@ -168,11 +168,35 @@ private:
                 if (packet_id == 0x00) { // Status Request
                     std::printf("\033[1;36m[STATUS]\033[0m Status Request -> Sending Response (%s)\n",
                                 target_checker_->is_online() ? "Online" : "Offline");
-                    if (target_checker_->is_online()) {
-                        send_static_packet(waiting_server::STATUS_PACKET_ONLINE, waiting_server::STATUS_PACKET_ONLINE_SIZE);
-                    } else {
-                        send_static_packet(waiting_server::STATUS_PACKET_OFFLINE, waiting_server::STATUS_PACKET_OFFLINE_SIZE);
-                    }
+                    const uint8_t* prefix_ptr = target_checker_->is_online() ?
+                        waiting_server::STATUS_PREFIX_ONLINE : waiting_server::STATUS_PREFIX_OFFLINE;
+                    size_t prefix_len = target_checker_->is_online() ?
+                        waiting_server::STATUS_PREFIX_ONLINE_SIZE : waiting_server::STATUS_PREFIX_OFFLINE_SIZE;
+                    const uint8_t* suffix_ptr = target_checker_->is_online() ?
+                        waiting_server::STATUS_SUFFIX_ONLINE : waiting_server::STATUS_SUFFIX_OFFLINE;
+                    size_t suffix_len = target_checker_->is_online() ?
+                        waiting_server::STATUS_SUFFIX_ONLINE_SIZE : waiting_server::STATUS_SUFFIX_OFFLINE_SIZE;
+
+                    const char* motd = "❄ WaitingServer ✦ Linux";
+                    size_t motd_len = std::strlen(motd);
+                    size_t json_len = prefix_len + motd_len + suffix_len;
+                    size_t json_varint_len = waiting_server::varint_size(static_cast<int32_t>(json_len));
+                    size_t payload_len = 1 /* packet_id 0x00 */ + json_varint_len + json_len;
+
+                    std::vector<std::byte> pkt;
+                    pkt.resize(waiting_server::varint_size(static_cast<int32_t>(payload_len)) + payload_len);
+                    size_t offset = 0;
+                    offset += waiting_server::write_varint(std::span<std::byte>(pkt.data() + offset, pkt.size() - offset), static_cast<int32_t>(payload_len));
+                    pkt[offset++] = std::byte{0x00};
+                    offset += waiting_server::write_varint(std::span<std::byte>(pkt.data() + offset, pkt.size() - offset), static_cast<int32_t>(json_len));
+                    std::memcpy(pkt.data() + offset, prefix_ptr, prefix_len);
+                    offset += prefix_len;
+                    std::memcpy(pkt.data() + offset, motd, motd_len);
+                    offset += motd_len;
+                    std::memcpy(pkt.data() + offset, suffix_ptr, suffix_len);
+                    offset += suffix_len;
+
+                    send_dynamic_packet(pkt.data(), offset);
                     return true;
                 } else if (packet_id == 0x01) { // Ping Request
                     auto payload_opt = read_ulong(payload);
@@ -639,7 +663,7 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string_view arg1 = argv[1];
         if (arg1 == "--version" || arg1 == "-v") {
-            std::printf("WaitingServer Linux (Minecraft Java Edition Protocol 776 / 26.2)\n");
+            std::printf("WaitingServer Linux (Minecraft Java Edition Protocol 777 / 26.3)\n");
             return 0;
         }
         if (arg1 == "--help" || arg1 == "-h") {
