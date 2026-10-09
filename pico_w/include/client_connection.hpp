@@ -23,11 +23,11 @@ struct ClientConnection {
         Closed
     } state = State::Handshake;
 
-    std::array<std::byte, 1024> rx_buffer = {};
+    std::array<std::byte, 2048> rx_buffer = {};
     size_t rx_len = 0;
 
     // Fixed pre-allocated TX buffer for dynamic responses
-    std::array<std::byte, 1024> tx_buffer = {};
+    std::array<std::byte, 2048> tx_buffer = {};
 
     char player_name[20] = {};
     std::array<std::byte, 16> player_uuid = {};

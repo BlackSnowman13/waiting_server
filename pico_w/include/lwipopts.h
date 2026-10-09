@@ -16,7 +16,7 @@
 #define LWIP_TCP                    1
 #define TCP_MSS                     1460
 #define TCP_WND                     (4 * TCP_MSS)
-#define TCP_SND_BUF                 (6 * TCP_MSS)
+#define TCP_SND_BUF                 (8 * TCP_MSS)
 
 #define LWIP_ARP                    1
 #define LWIP_ETHERNET               1

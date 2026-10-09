@@ -673,10 +673,11 @@ static err_t on_tcp_recv(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t 
     }
 
     if (client->rx_len + p->tot_len > client->rx_buffer.size()) {
-        std::printf("[ERROR] RX buffer overflow! Dropping client.\n");
+        std::printf("[ERROR] RX buffer overflow (%zu + %u > %zu)! Dropping client.\n",
+                    client->rx_len, p->tot_len, client->rx_buffer.size());
         pbuf_free(p);
         close_client(client);
-        return ERR_MEM;
+        return ERR_OK;
     }
 
     pbuf_copy_partial(p, client->rx_buffer.data() + client->rx_len, p->tot_len, 0);

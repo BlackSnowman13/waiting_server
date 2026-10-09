@@ -6,93 +6,12 @@
 namespace waiting_server {
 
 inline constexpr const char PORTAL_HTML_TEMPLATE[] =
-R"raw_portal_html(<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WaitingServer Setup</title>
-  <style>
-    *{box-sizing:border-box}
-    body{background:#0f172a;color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;padding:20px 16px;display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
-    .card{background:#1e293b;border-radius:16px;padding:24px 20px;width:100%%;max-width:420px;box-shadow:0 10px 25px -5px rgba(0,0,0,.5);border:1px solid #334155}
-    .header{display:flex;align-items:center;margin-bottom:16px}
-    .header h2{margin:0;color:#38bdf8;font-size:20px;font-weight:700}
-    .section-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:700;margin:18px 0 6px;border-bottom:1px solid #334155;padding-bottom:4px}
-    label{display:block;margin:10px 0 4px;font-size:13px;color:#94a3b8;font-weight:600}
-    input,select{width:100%%;padding:10px 12px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:14px;outline:none}
-    input:focus,select:focus{border-color:#38bdf8}
-    .row{display:flex;gap:10px}
-    .row>div{flex:1}
-    button.submit-btn{width:100%%;margin-top:20px;padding:12px;border-radius:10px;border:none;background:#0284c7;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:background .15s}
-    button.submit-btn:hover{background:#0369a1}
-    .note{font-size:12px;color:#64748b;margin-top:12px;text-align:center;line-height:1.4}
-    .modal-backdrop{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;padding:16px;z-index:100}
-    .modal-box{background:#1e293b;border:1px solid #ef4444;border-radius:12px;padding:20px;max-width:380px;width:100%%;box-shadow:0 20px 25px -5px rgba(0,0,0,.6)}
-    .modal-title{color:#f87171;font-size:16px;font-weight:700;margin:0 0 10px}
-    .modal-msg{font-size:13px;color:#cbd5e1;line-height:1.4;margin-bottom:16px;word-break:break-word}
-    .modal-btn{width:100%%;padding:10px;border-radius:8px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-size:14px}
-    .modal-btn:hover{background:#dc2626}
-  </style>
-</head>
-<body>
-  %s
-  <div class="card">
-    <div class="header">
-      <h2>&#10052; WaitingServer Setup</h2>
-    </div>
-    <form action="/save" method="GET">
-      <div class="section-title">Wi-Fi Connection</div>
-      <label>Wi-Fi Network (SSID)</label>
-      <input type="text" name="ssid" value="%s" maxlength="32" placeholder="e.g. MyHomeWiFi" required>
-      <label>Wi-Fi Password</label>
-      <input type="password" name="pass" value="%s" maxlength="63" placeholder="Wi-Fi Password">
-      <div class="row">
-        <div>
-          <label>Auth Security</label>
-          <select name="auth">
-            %s
-          </select>
-        </div>
-        <div>
-          <label>Attempts</label>
-          <input type="number" name="attempts" value="%u" min="1" max="5" required>
-        </div>
-      </div>
-      <label>Device Hostname</label>
-      <input type="text" name="hostname" value="%s" maxlength="31" placeholder="WaitingServer" required>
-      <div class="section-title">Minecraft Server Gate</div>
-      <label>Server MOTD (Line 1)</label>
-      <input type="text" name="motd" value="%s" maxlength="47" placeholder="e.g. &#10052; WaitingServer &#10022; Pico W" required>
-      <input type="hidden" name="host" value="%s">
-      <div class="row">
-        <div style="flex:2;">
-          <label>Target Server MAC (WoL &amp; Dynamic IP)</label>
-          <input type="text" name="mac" value="%s" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" required>
-        </div>
-        <div style="flex:1;">
-          <label>Port</label>
-          <input type="number" name="port" value="%u" min="1" max="65535" required>
-        </div>
-      </div>
-      <button type="submit" class="submit-btn">Save &amp; Connect</button>
-    </form>
-    <div class="note">Pico W will save these settings to Flash and reboot immediately to connect.</div>
-  </div>
-  <script>
-    function dismissError(){
-      var m=document.getElementById('error-modal');
-      if(m)m.style.display='none';
-    }
-  </script>
-</body>
-</html>
-)raw_portal_html";
+R"raw_portal_html(<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"><title>WaitingServer Setup</title><style> *{box-sizing:border-box;margin:0;padding:0} body{background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;justify-content:center;padding:28px 16px;-webkit-font-smoothing:antialiased} .sheet{width:100%%;max-width:420px} .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:0 2px} .title-wrap{display:flex;align-items:center;gap:10px} .status-dot{width:8px;height:8px;border-radius:50%%;background:#10b981;box-shadow:0 0 10px rgba(16,185,129,.6);display:inline-block} h1{font-size:18px;font-weight:600;letter-spacing:-.02em;color:#fafafa} .badge{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;padding:3px 8px;border-radius:20px;background:#18181b;border:1px solid #27272a;color:#a1a1aa} .alert-banner{background:#181112;border:1px solid rgba(239,68,68,.25);border-left:3px solid #ef4444;border-radius:10px;padding:12px 14px;margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px} .alert-content{flex:1} .alert-title{font-size:12px;font-weight:600;color:#f87171;margin-bottom:3px} .alert-msg{font-size:12px;color:#a1a1aa;line-height:1.4;word-break:break-word} .alert-close{background:none;border:none;color:#71717a;font-size:18px;line-height:1;cursor:pointer;padding:0 2px} .alert-close:hover{color:#f4f4f5} .section-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#71717a;margin:20px 4px 6px} .group{background:#141416;border:1px solid #222227;border-radius:12px;overflow:hidden} .row{padding:10px 14px;border-bottom:1px solid #1c1c22;transition:background .15s} .row:last-child{border-bottom:none} .row:focus-within{background:#18181d} .row-split{display:flex;padding:0} .row-split>div{flex:1;padding:10px 14px} .row-split>div:first-child{border-right:1px solid #1c1c22} .row-split>div:focus-within{background:#18181d} .row-action{display:flex;align-items:center;justify-content:space-between;gap:10px} .field-wrap{flex:1;min-width:0} label{display:block;font-size:11px;font-weight:500;color:#71717a;margin-bottom:3px} input,select{width:100%%;background:transparent;border:none;outline:none;font-size:14px;color:#f4f4f5;font-family:inherit;padding:2px 0 0} input::placeholder{color:#3f3f46} select{cursor:pointer;background:#141416} .action-btn{background:#1f1f23;border:1px solid #2e2e36;color:#a1a1aa;font-size:11px;font-weight:600;cursor:pointer;padding:5px 10px;border-radius:6px;transition:all .15s;white-space:nowrap} .action-btn:hover{color:#f4f4f5;border-color:#3f3f46} button.submit-btn{width:100%%;margin-top:22px;padding:13px;border-radius:10px;border:none;background:#10b981;color:#09090b;font-size:14px;font-weight:600;letter-spacing:-.01em;cursor:pointer;transition:opacity .15s} button.submit-btn:hover{opacity:.92} button.submit-btn:active{transform:scale(.99)} .footnote{text-align:center;font-size:11px;color:#52525b;margin-top:14px} </style></head><body><div class="sheet"><div class="header"><div class="title-wrap"><span class="status-dot"></span><h1>WaitingServer</h1></div><span class="badge">Setup</span></div> %s <form action="/save" method="GET"><div class="section-title">Wi-Fi Connection</div><div class="group"><div class="row"><label>Network (SSID)</label><input type="text" name="ssid" value="%s" maxlength="32" placeholder="e.g. HomeNetwork" required></div><div class="row"><div class="row-action"><div class="field-wrap"><label>Password</label><input type="password" id="pass" name="pass" value="%s" maxlength="63" placeholder="Wi-Fi Password"></div><button type="button" id="toggle-pass" class="action-btn" onclick="togglePass()">Show</button></div></div><div class="row-split"><div><label>Security</label><select name="auth"> %s </select></div><div><label>Max Retries</label><input type="number" name="attempts" value="%u" min="1" max="5" required></div></div></div><div class="section-title">Minecraft Gateway</div><div class="group"><div class="row"><label>Device Hostname</label><input type="text" name="hostname" value="%s" maxlength="31" placeholder="WaitingServer" required></div><div class="row"><label>Server MOTD (Line 1)</label><input type="text" name="motd" value="%s" maxlength="47" placeholder="e.g. WaitingServer Lobby" required></div><input type="hidden" name="host" value="%s"><div class="row-split"><div style="flex:2"><label>Target Server MAC</label><input type="text" id="mac" name="mac" value="%s" maxlength="17" placeholder="B4:2E:99:9D:56:02" spellcheck="false" autocomplete="off" required></div><div style="flex:1"><label>Port</label><input type="number" name="port" value="%u" min="1" max="65535" required></div></div></div><button type="submit" class="submit-btn">Save &amp; Reboot</button><div class="footnote">Device reboots immediately into target network upon save.</div></form></div><script> function dismissAlert(){var a=document.getElementById('alert-banner');if(a)a.style.display='none'} function togglePass(){var p=document.getElementById('pass'),b=document.getElementById('toggle-pass');if(!p||!b)return;if(p.type==='password'){p.type='text';b.textContent='Hide'}else{p.type='password';b.textContent='Show'}} var macEl=document.getElementById('mac');if(macEl){macEl.addEventListener('input',function(){var raw=this.value.toUpperCase().replace(/[^0-9A-F]/g,'');if(raw.length>12)raw=raw.slice(0,12);var parts=[];for(var i=0;i<raw.length;i+=2){parts.push(raw.slice(i,i+2))}this.value=parts.join(':')})} </script></body></html> )raw_portal_html";
 
 inline constexpr const char PORTAL_ERROR_MODAL_TEMPLATE[] =
-"<div id='error-modal' class='modal-backdrop'><div class='modal-box'><h3 class='modal-title'>&#9888; Connection Failed</h3><div class='modal-msg'>%s</div><button class='modal-btn' onclick='dismissError()'>Dismiss</button></div></div>";
+"<div id='alert-banner' class='alert-banner'><div class='alert-content'><div class='alert-title'>Connection Failed</div><div class='alert-msg'>%s</div></div><button type='button' class='alert-close' onclick='dismissAlert()'>&times;</button></div>";
 
 inline constexpr const char PORTAL_SAVE_SUCCESS_RESPONSE[] =
-"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{background:#0f172a;color:#eee;font-family:sans-serif;text-align:center;padding:40px;}.card{background:#1e293b;border-radius:14px;padding:30px;max-width:400px;margin:auto;box-shadow:0 4px 16px rgba(0,0,0,0.5);border:1px solid #334155;}h2{color:#38bdf8;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class='card'><h2>&#10004; Settings Saved!</h2><p>WaitingServer is rebooting to connect to your Wi-Fi network.</p><p>The LED will transition to a steady 1 Hz blink once online.</p></div></body></html>";
+"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:24px 16px;display:flex;justify-content:center;align-items:center;min-height:100vh}*{box-sizing:border-box}.sheet{width:100%;max-width:380px;background:#141416;border:1px solid #222227;border-radius:14px;padding:28px 24px;text-align:center}.icon{display:inline-flex;width:40px;height:40px;border-radius:50%;background:#064e3b;color:#10b981;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px}h2{font-size:17px;font-weight:600;margin:0 0 8px;color:#fafafa}p{font-size:13px;color:#a1a1aa;line-height:1.5;margin:0 0 14px}.note{font-size:11px;color:#71717a}</style></head><body><div class='sheet'><div class='icon'>&#10003;</div><h2>Settings Saved</h2><p>WaitingServer is rebooting to connect to your Wi-Fi network.</p><div class='note'>The LED will resume its normal pulse once online.</div></div></body></html>";
 
 } // namespace waiting_server

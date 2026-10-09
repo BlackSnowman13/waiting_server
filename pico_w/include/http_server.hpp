@@ -261,7 +261,7 @@ private:
 
     void handle_get_form(struct tcp_pcb* tpcb) {
         // Static buffer to eliminate stack consumption
-        static char s_page_buf[6144];
+        static char s_page_buf[10240];
 
         // Format error modal snippet if previous failure occurred
         char error_modal_buf[512] = {};
@@ -302,6 +302,10 @@ private:
 
         if (len > 0) {
             size_t actual_body_len = std::min(static_cast<size_t>(len), sizeof(s_page_buf) - 1);
+            if (static_cast<size_t>(len) >= sizeof(s_page_buf)) {
+                std::printf("[WARN] Setup HTML was truncated! Needed %d bytes, buffer is %zu\n",
+                            len, sizeof(s_page_buf) - 1);
+            }
             char header_buf[160];
             int hdr_len = std::snprintf(header_buf, sizeof(header_buf),
                 "HTTP/1.1 200 OK\r\n"

@@ -37,6 +37,8 @@ public:
     uint32_t scan_cursor_u32 = 0;
     uint32_t scan_end_u32 = 0;
     uint32_t last_scan_step_ms = 0;
+    uint32_t scan_cooldown_until_ms = 0;
+    uint32_t round_pause_until_ms = 0;
     uint8_t scan_round = 0;
 
     void init(const char* host, uint16_t port, const char* mac) {
@@ -86,10 +88,24 @@ public:
     }
 
     void start_arp_scan() {
+        if (!has_valid_mac || arp_resolved) return;
+        if (scan_in_progress) return; // Do not interrupt an active scan
+
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        if (now < scan_cooldown_until_ms) {
+            return; // Honor cooldown period between full multi-round scan attempts
+        }
+
         if (netif_default == nullptr) return;
         const ip4_addr_t* host_ip = netif_ip4_addr(netif_default);
         const ip4_addr_t* mask = netif_ip4_netmask(netif_default);
         if (!host_ip || !mask) return;
+
+        // Check if MAC is already present in lwIP ARP cache
+        if (check_arp_cache()) {
+            start_tcp_probe();
+            return;
+        }
 
         uint32_t host_u32 = ntohl(ip4_addr_get_u32(host_ip));
         uint32_t mask_u32 = ntohl(ip4_addr_get_u32(mask));
@@ -99,20 +115,15 @@ public:
         scan_in_progress = true;
         scan_round = 0;
         last_scan_step_ms = 0;
+        round_pause_until_ms = 0;
 
         char host_buf[16] = {};
         char mask_buf[16] = {};
         ip4addr_ntoa_r(host_ip, host_buf, sizeof(host_buf));
         ip4addr_ntoa_r(mask, mask_buf, sizeof(mask_buf));
 
-        std::printf("[ARP] Starting on-demand ARP scan for MAC %s across %s/%s...\n",
+        std::printf("[ARP] Starting gentle ARP discovery for %s (%s/%s)...\n",
                     target_mac, host_buf, mask_buf);
-
-        // Check if MAC is already present in lwIP ARP cache
-        if (check_arp_cache()) {
-            scan_in_progress = false;
-            start_tcp_probe();
-        }
     }
 
     bool check_arp_cache() {
@@ -138,7 +149,13 @@ public:
     void poll(uint32_t current_ms, bool has_waiting_clients) {
         // 1. Progress on-demand ARP scanning
         if (scan_in_progress && !arp_resolved) {
-            if (current_ms - last_scan_step_ms >= 50) {
+            // Respect inter-round pauses (gives CYW43 chip breathing room)
+            if (current_ms < round_pause_until_ms) {
+                return;
+            }
+
+            // Paced: 2 ARP requests every 100ms (~20 pkts/sec) to prevent Wi-Fi SPI saturation
+            if (current_ms - last_scan_step_ms >= 100) {
                 last_scan_step_ms = current_ms;
 
                 if (check_arp_cache()) {
@@ -149,7 +166,7 @@ public:
 
                 if (netif_default != nullptr) {
                     uint32_t my_ip = ntohl(ip4_addr_get_u32(netif_ip4_addr(netif_default)));
-                    for (int k = 0; k < 16 && scan_cursor_u32 <= scan_end_u32; ++k, ++scan_cursor_u32) {
+                    for (int k = 0; k < 2 && scan_cursor_u32 <= scan_end_u32; ++k, ++scan_cursor_u32) {
                         if (scan_cursor_u32 == my_ip) continue;
                         ip4_addr_t cand_ip;
                         ip4_addr_set_u32(&cand_ip, htonl(scan_cursor_u32));
@@ -164,9 +181,14 @@ public:
                         uint32_t mask_u32 = ntohl(ip4_addr_get_u32(mask));
                         scan_cursor_u32 = (host_u32 & mask_u32) + 1;
 
-                        if (scan_round >= 6 && !has_waiting_clients) {
+                        if (scan_round >= 4) {
                             scan_in_progress = false;
-                            std::printf("[ARP] Scan timed out. Target server did not respond to ARP.\n");
+                            scan_cooldown_until_ms = current_ms + 25000; // 25s cooldown
+                            std::printf("[ARP] Scan round limit (%u sweeps) reached without response for %s. Pausing 25s.\n",
+                                        scan_round, target_mac);
+                        } else {
+                            // Pause 3000ms between sweeps so Wi-Fi stack stays fully responsive
+                            round_pause_until_ms = current_ms + 3000;
                         }
                     }
                 }

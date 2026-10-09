@@ -21,8 +21,14 @@ def main():
         print(f"Error: {html_path} does not exist", file=sys.stderr)
         sys.exit(1)
         
+    import re
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
+
+    # Minify HTML & CSS: strip comments and collapse whitespace
+    html = re.sub(r'/\*.*?\*/', '', html, flags=re.DOTALL)
+    html = re.sub(r'>\s+<', '><', html)
+    html = re.sub(r'\s+', ' ', html)
 
     # Escape CSS/HTML percent signs into printf-safe %%
     html_escaped = html.replace("%", "%%")
@@ -41,12 +47,12 @@ def main():
     html_escaped = html_escaped.replace("{{TARGET_MAC}}", "%s")
 
     error_modal_snippet = (
-        "<div id='error-modal' class='modal-backdrop'>"
-        "<div class='modal-box'>"
-        "<h3 class='modal-title'>&#9888; Connection Failed</h3>"
-        "<div class='modal-msg'>%s</div>"
-        "<button class='modal-btn' onclick='dismissError()'>Dismiss</button>"
+        "<div id='alert-banner' class='alert-banner'>"
+        "<div class='alert-content'>"
+        "<div class='alert-title'>Connection Failed</div>"
+        "<div class='alert-msg'>%s</div>"
         "</div>"
+        "<button type='button' class='alert-close' onclick='dismissAlert()'>&times;</button>"
         "</div>"
     )
 
@@ -55,13 +61,12 @@ def main():
         "Content-Type: text/html\\r\\n"
         "Connection: close\\r\\n\\r\\n"
         "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<style>body{background:#0f172a;color:#eee;font-family:sans-serif;text-align:center;padding:40px;}"
-        ".card{background:#1e293b;border-radius:14px;padding:30px;max-width:400px;margin:auto;box-shadow:0 4px 16px rgba(0,0,0,0.5);border:1px solid #334155;}"
-        "h2{color:#38bdf8;}p{color:#94a3b8;line-height:1.5;}</style></head><body>"
-        "<div class='card'>"
-        "<h2>&#10004; Settings Saved!</h2>"
+        "<style>body{background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:24px 16px;display:flex;justify-content:center;align-items:center;min-height:100vh}*{box-sizing:border-box}.sheet{width:100%;max-width:380px;background:#141416;border:1px solid #222227;border-radius:14px;padding:28px 24px;text-align:center}.icon{display:inline-flex;width:40px;height:40px;border-radius:50%;background:#064e3b;color:#10b981;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px}h2{font-size:17px;font-weight:600;margin:0 0 8px;color:#fafafa}p{font-size:13px;color:#a1a1aa;line-height:1.5;margin:0 0 14px}.note{font-size:11px;color:#71717a}</style></head><body>"
+        "<div class='sheet'>"
+        "<div class='icon'>&#10003;</div>"
+        "<h2>Settings Saved</h2>"
         "<p>WaitingServer is rebooting to connect to your Wi-Fi network.</p>"
-        "<p>The LED will transition to a steady 1 Hz blink once online.</p>"
+        "<div class='note'>The LED will resume its normal pulse once online.</div>"
         "</div></body></html>"
     )
 
